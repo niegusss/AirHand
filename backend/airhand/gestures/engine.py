@@ -55,25 +55,41 @@ class GestureConfig:
 
     """Thumb-to-index distance, in multiples of hand scale, at which a pinch counts as closed.
 
-    Measured on a real 20 s trace (2026-08-08): a hand that is **not** pinching never reads below
-    **0.853**, p01 0.869, median 0.915. A genuine contact reads about 0.17. The original 0.35 sat
-    far below the middle of that gap and left most of the range unused — which cost real clicks
-    whenever occlusion pushed the thumb estimate out, and bought nothing, because there is no open
-    hand anywhere near it.
+    **Bounded by the nearest confusable pose, which is a closed hand — not by a resting one.**
+    That distinction is the whole history of this value. It was set from a trace of an open hand
+    that never read below 0.853, and a threshold of 0.50 looked like a comfortable margin under
+    that. It is not a margin under anything that matters: when the hand curls, the thumb comes in
+    beside the fingertips, and the fist is the pose a click has to be told apart from.
 
-    0.50 keeps a 0.35 margin under the lowest open-hand reading on that trace. Deliberately not
-    higher: it is one trace, of one hand, in one pose, and the poses that would fail are the ones
-    it does not contain.
+    Measured against a real closed hand for the first time on 2026-08-09
+    (`tools/bench_poses.py`, 1622 frames): fist floor **0.195**, p02 0.215, against **0.103** for a
+    real thumb-to-fingertip contact. At 0.50 that recording emits five events on the fist alone,
+    including a drag. The synthetic fist in `handmodel` reproduces it independently at 0.425.
+
+    0.18 sits under the measured floor with the whole contact range still below it. Deliberately
+    biased low: a missed click costs a repeat, an unrequested one lands somewhere the user cannot
+    explain. One hand, one camera — calibration is what fits this to a particular hand, and it is
+    mandatory on first run.
     """
-    pinch_close: float = 0.50
+    pinch_close: float = 0.18
     """Must exceed `pinch_close` — the gap is the hysteresis band.
 
-    Raised alongside `pinch_close` to keep the band at 0.20. Narrowing it would be the expensive
-    mistake here: the band is the only thing standing between a hand resting near the threshold and
-    a burst of phantom clicks, and per-frame noise in this measurement is around ±0.03, so 0.20 is
-    roughly six times the noise. A fully open hand still clears 0.70 comfortably.
+    Moved with `pinch_close` to keep the band at 0.20. Narrowing it would be the expensive mistake
+    here: the band is the only thing standing between a hand resting near the threshold and a burst
+    of phantom clicks, and per-frame noise in this measurement is around ±0.03, so 0.20 is roughly
+    six times the noise. A fist still clears 0.38 comfortably.
     """
-    pinch_open: float = 0.70
+    pinch_open: float = 0.38
+    """How long the **index** pinch must be held before it becomes a drag instead of a click.
+
+    Applies to that pair only. The middle pair has no held mode — right-button dragging is not a
+    gesture this project has — so a duration limit there would resolve a slow right click into
+    nothing at all. That is exactly what it did until 2026-08-09, and the missing clicks looked
+    enough like a threshold problem to get this value raised in compensation.
+
+    Coupled to `pinch_close`: a looser threshold starts this timer while the fingers are still
+    approaching, so the same physical click reads as a longer hold. Retune one, check the other.
+    """
     hold_to_drag_seconds: float = 0.4
     click_latch_seconds: float = 0.2
     extended_angle_degrees: float = 150.0
@@ -372,7 +388,6 @@ class GestureEngine:
         was_index_closed = self._index.closed
         was_middle_closed = self._middle.closed
         index_hold = self._index.held_for(now)
-        middle_hold = self._middle.held_for(now)
 
         self._index.update(features.pinch_index, now, config)
         self._middle.update(features.pinch_middle, now, config)
@@ -392,8 +407,13 @@ class GestureEngine:
                 self._emit(GestureEventType.LEFT_CLICK)
             self._state = MachineState.IDLE
 
+        # **No deadline on this one.** The index pair is gated on `hold_to_drag_seconds` because
+        # overrunning it means something else — a drag. The middle pair has no second mode, so the
+        # same gate resolved a long right click into *nothing*: the release fell through a branch
+        # that does not exist and the gesture disappeared without a trace. A gate with nothing on
+        # the other side does not decide anything, it just discards.
         if was_middle_closed and not self._middle.closed:
-            if self._owner == "middle" and middle_hold < config.hold_to_drag_seconds:
+            if self._owner == "middle":
                 self._latch("right_click", now)
                 self._emit(GestureEventType.RIGHT_CLICK)
             self._state = MachineState.IDLE

@@ -110,8 +110,13 @@ def test_a_section_that_is_not_an_object_is_refused() -> None:
 
 def test_a_patch_that_breaks_hysteresis_is_refused() -> None:
     """Range checks cannot catch a relationship *between* fields — the dataclass does that."""
+    # Derived from the default, not written in. A literal stops testing anything the day the
+    # default drops below it, and says nothing while it silently passes — which is what happened
+    # when `pinchClose` moved 0.50 → 0.18 on 2026-08-09.
+    below_close = round(DEFAULTS.gesture.pinch_close - 0.05, 4)
+
     with pytest.raises(InvalidSettings, match="hysteresis"):
-        merge(DEFAULTS, {"gesture": {"pinchOpen": 0.2}})  # below the default pinchClose
+        merge(DEFAULTS, {"gesture": {"pinchOpen": below_close}})
 
 
 def test_a_refused_patch_leaves_the_current_settings_untouched() -> None:

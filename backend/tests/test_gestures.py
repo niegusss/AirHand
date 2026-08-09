@@ -158,8 +158,10 @@ def _right_click_with_index_curled(gap: float):
 def test_a_right_click_with_a_curled_index_fires_one_click_not_two(close: float) -> None:
     """Both pinch pairs close, so both used to resolve — a left *and* a right click.
 
-    Parametrized over the threshold a real calibration produced and the shipped default, because
-    both reproduce it. The rule that fixes it is ordinal, so neither value should matter.
+    Parametrized over the threshold a real calibration produced and the one that shipped at the
+    time, because both reproduce it. Kept at those values after the default dropped to 0.18: the
+    rule that fixes this is ordinal, so it has to hold at any threshold, and a loose one is where
+    the two pairs actually collide.
     """
     engine = _engine(pinch_close=close, pinch_open=close + 0.20)
 
@@ -235,6 +237,74 @@ def test_arbitration_does_not_touch_a_plain_left_click() -> None:
     _events(engine, open_hand, aspect=1.0, now=0.00)
     _events(engine, make_hand(POINTING, pinch_index=0.15), aspect=1.0, now=0.05)
     assert _events(engine, open_hand, aspect=1.0, now=0.20) == ["left_click"]
+
+
+# ------------------------------------------------- a right click has no deadline
+#
+# The two pinch pairs were gated on `hold_to_drag_seconds` identically, and they are not
+# symmetric: **only the index pair has a held mode.** A left click that overruns the threshold
+# becomes a drag; a right click that overruns it used to become *nothing at all* — the release
+# fell through a branch that did not exist, and the gesture vanished without a trace.
+#
+# Measured on `traces/poses.jsonl` before this was fixed: 8 deliberate right clicks, 5 emitted.
+# It is also what made `hold_to_drag_seconds` look like it needed raising to 0.6, which bought
+# back two right clicks at the cost of a drag that was harder to start.
+
+
+@pytest.mark.parametrize("hold", [0.5, 1.2])
+def test_a_slow_right_click_still_clicks(hold: float) -> None:
+    """Held well past the drag threshold, which the middle pair has no use for."""
+    engine = _engine(hold_to_drag_seconds=0.4)
+    open_hand = make_hand(POINTING, pinch_middle=0.9)
+    pinched = make_hand(POINTING, pinch_middle=0.15)
+
+    _events(engine, open_hand, aspect=1.0, now=0.00)
+    _events(engine, pinched, aspect=1.0, now=0.05)
+    _events(engine, pinched, aspect=1.0, now=0.05 + hold)
+
+    assert _events(engine, open_hand, aspect=1.0, now=0.10 + hold) == ["right_click"]
+
+
+def test_a_slow_right_click_with_a_curled_index_fires_exactly_one_click() -> None:
+    """The two defects meet: a long hold *and* both pairs closed.
+
+    Dropping the deadline must not reopen the pass-13 defect — the index pair is closed here too,
+    and it is the pair that owns dragging.
+    """
+    engine = _engine(pinch_close=0.4695, pinch_open=0.6695, hold_to_drag_seconds=0.4)
+
+    fired: list[str] = []
+    fired += _events(engine, _right_click_with_index_curled(1.10), aspect=1.0, now=0.00)
+    fired += _events(engine, _right_click_with_index_curled(0.15), aspect=1.0, now=0.05)
+    fired += _events(engine, _right_click_with_index_curled(0.15), aspect=1.0, now=0.80)
+    fired += _events(engine, _right_click_with_index_curled(1.10), aspect=1.0, now=0.90)
+
+    assert fired == ["right_click"]
+
+
+def test_the_shipped_defaults_keep_a_fist_silent() -> None:
+    """The shipped `pinch_close` must sit under a closed hand, not under an open one.
+
+    A fist is not a click, and it is the *nearest* pose to one — the thumb curls in beside the
+    fingertips. This fixture's fist reads `pinch_index` 0.425, which the 0.50 default classified
+    as a pinch: hold it for a second and it started a drag. Anchoring the threshold to the resting
+    hand put it most of the way up a gap that is mostly empty.
+
+    Uses `GestureConfig()` with no overrides on purpose. Every other test here names its
+    thresholds, so nothing else would notice a default that is unusable — and "Restore defaults"
+    on the Settings screen is one click away from it.
+    """
+    engine = _engine()
+
+    fired: list[str] = []
+    fired += _events(engine, make_hand(POINTING), aspect=1.0, now=0.0)
+    now = 0.1
+    while now < 1.2:
+        fired += _events(engine, make_hand(FIST), aspect=1.0, now=now)
+        now += 0.1
+    fired += _events(engine, make_hand(POINTING), aspect=1.0, now=1.3)
+
+    assert fired == []
 
 
 def test_held_pinch_becomes_a_drag_not_a_click() -> None:
