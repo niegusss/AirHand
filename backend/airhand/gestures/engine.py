@@ -161,15 +161,26 @@ class _PinchTracker:
 
     closed: bool = False
     closed_at: float | None = None
+    """Smallest distance seen since this pair closed; `inf` while open.
+
+    How near the thumb actually came to *this* fingertip over the whole closure. Used to decide
+    which pinch the user meant when both pairs are closed at once — see `GestureEngine._owner`.
+    Comparing the two current distances frame by frame would switch owners mid-gesture on noise.
+    """
+    best: float = float("inf")
 
     def update(self, distance: float, now: float, config: GestureConfig) -> None:
         if self.closed:
             if distance > config.pinch_open:
                 self.closed = False
                 self.closed_at = None
+                self.best = float("inf")
+            else:
+                self.best = min(self.best, distance)
         elif distance < config.pinch_close:
             self.closed = True
             self.closed_at = now
+            self.best = distance
 
     def held_for(self, now: float) -> float:
         return 0.0 if self.closed_at is None else now - self.closed_at
@@ -187,6 +198,7 @@ class _PinchTracker:
     def reset(self) -> None:
         self.closed = False
         self.closed_at = None
+        self.best = float("inf")
 
 
 @dataclass(frozen=True)
@@ -226,6 +238,19 @@ class GestureEngine:
     _dragging: bool = field(default=False, init=False)
     _scroll_origin: float | None = field(default=None, init=False)
     _events: list[GestureEvent] = field(default_factory=list, init=False)
+    """Which pinch pair owns the gesture currently under way — `"index"`, `"middle"` or None.
+
+    **A hand has one thumb, so at most one pinch is being made.** The two pairs are nevertheless
+    measured independently, and they are not independent: when the index finger is curled — which
+    is what it does while the thumb reaches across to the middle finger — the two fingertips sit
+    beside each other, so the thumb cannot approach one without approaching the other. Measured
+    2026-08-09: a right click with the index curled reads `pinch_index` 0.264 against
+    `pinch_middle` 0.150, and any threshold above 0.264 closes both.
+
+    Without an owner, both pairs resolve on release and one gesture emits a left click *and* a
+    right click, or a held right click starts a drag. Both were reachable at the shipped default.
+    """
+    _owner: str | None = field(default=None, init=False)
     """When the hand went missing, or None while it is visible. Drives the dropout grace."""
     _lost_since: float | None = field(default=None, init=False)
 
@@ -241,6 +266,7 @@ class GestureEngine:
 
         self._index.reset()
         self._middle.reset()
+        self._owner = None
         self._state = MachineState.IDLE
         self._latched = None
         self._latched_until = 0.0
@@ -317,6 +343,29 @@ class GestureEngine:
     def _emit(self, event_type: GestureEventType, *, scroll_steps: int = 0) -> None:
         self._events.append(GestureEvent(event_type, scroll_steps))
 
+    def _elect_owner(self) -> None:
+        """Decide which pinch pair the gesture under way belongs to.
+
+        **Depth, not order.** The two distances cross `pinch_close` within a frame or two of each
+        other, in an order that depends on the hand and on noise; the finger the thumb is actually
+        touching is unambiguous for the whole closure. `best` is that, accumulated.
+
+        **Frozen once a pair opens.** The pairs release at different times — the index sits further
+        from the thumb during a middle pinch, so it crosses `pinch_open` first — and re-electing on
+        the frames in between would hand the gesture to whichever pair happened to still be closed.
+        That is how a right click would end up emitting a left click a few frames later.
+
+        Ties go to the index, matching the precedence drag has always had: it is the only sustained
+        mode, and interrupting one costs more than the reverse.
+        """
+        if self._index.closed and self._middle.closed:
+            self._owner = "index" if self._index.best <= self._middle.best else "middle"
+        elif self._owner is None:
+            if self._index.closed:
+                self._owner = "index"
+            elif self._middle.closed:
+                self._owner = "middle"
+
     def _classify(self, features: HandFeatures, now: float) -> Gesture:
         config = self.config
 
@@ -327,31 +376,42 @@ class GestureEngine:
 
         self._index.update(features.pinch_index, now, config)
         self._middle.update(features.pinch_middle, now, config)
+        self._elect_owner()
 
         # Releases are evaluated before the new state, because a click is defined by the release.
+        #
+        # A drag always ends, owner or not: the release blocks below are the only place a held
+        # button is let go on this path, and skipping one because the pair lost an election would
+        # leave a real mouse button down. Ownership gates *emitting a click*, never releasing.
         if was_index_closed and not self._index.closed:
             if self._dragging:
                 self._dragging = False
                 self._emit(GestureEventType.DRAG_END)
-            elif index_hold < config.hold_to_drag_seconds:
+            elif self._owner == "index" and index_hold < config.hold_to_drag_seconds:
                 self._latch("left_click", now)
                 self._emit(GestureEventType.LEFT_CLICK)
             self._state = MachineState.IDLE
 
         if was_middle_closed and not self._middle.closed:
-            if middle_hold < config.hold_to_drag_seconds:
+            if self._owner == "middle" and middle_hold < config.hold_to_drag_seconds:
                 self._latch("right_click", now)
                 self._emit(GestureEventType.RIGHT_CLICK)
             self._state = MachineState.IDLE
+
+        # Cleared only now, so the block above could still consult it on the frame the last pair
+        # opened — that frame *is* the click.
+        if not self._index.closed and not self._middle.closed:
+            self._owner = None
 
         # Leaving the scroll pose ends the current scroll gesture; the next one starts fresh
         # rather than inheriting a stale origin.
         if self._state is not MachineState.SCROLL:
             self._scroll_origin = None
 
-        # Index pinch wins over middle pinch: it carries drag, which is a sustained mode, and
-        # letting a stray middle-finger reading interrupt a drag would be worse than the reverse.
-        if self._index.closed:
+        # The owner decides, not the order the pairs happen to be checked in. A held right click
+        # made with a curled index closes this pair too, and without the guard it would start a
+        # drag — the same defect as the double click, with a held mouse button instead.
+        if self._index.closed and self._owner == "index":
             held = self._index.held_for(now)
             if held >= config.hold_to_drag_seconds:
                 if not self._dragging:
@@ -364,9 +424,13 @@ class GestureEngine:
             # would be a guess. The pending state is visible in debug output for tuning.
             return self._latched_or_none(now)
 
-        if self._middle.closed:
+        if self._middle.closed and self._owner == "middle":
             self._state = MachineState.PINCH_MIDDLE_PENDING
             return self._latched_or_none(now)
+
+        # A pair may still be closed here without owning the gesture — the thumb is near that
+        # fingertip only because it is near the other one. Deliberately no early return: the pose
+        # checks below decide what to report, rather than this frame being forced to "idle".
 
         extended = features.extended
         if extended["index"] and extended["middle"] and not extended["ring"] and not extended["pinky"]:

@@ -137,6 +137,106 @@ def test_quick_middle_pinch_release_is_a_right_click() -> None:
     assert _run(engine, open_hand, aspect=1.0, now=0.25) == "right_click"
 
 
+# ------------------------------------------------- one gesture, one click
+#
+# Every test above poses the hand as POINTING, which holds the index finger rigidly out of the
+# way. A hand does not do that. When the index is curled — which is what it does while the thumb
+# reaches across to the middle finger — the two fingertips sit beside each other, and the thumb
+# cannot approach one without approaching the other.
+#
+# Measured on this same fixture (2026-08-09): a right click with the index curled reads
+# `pinch_index` 0.264 against `pinch_middle` 0.150. Both are under a threshold of 0.4695, which is
+# what a real calibration produced. The fixture could always build this pose; no test asked for it.
+
+
+def _right_click_with_index_curled(gap: float):
+    """Thumb reaching the middle fingertip with the rest of the hand closed."""
+    return make_hand(FIST, pinch_middle=gap)
+
+
+@pytest.mark.parametrize("close", [0.4695, 0.50])
+def test_a_right_click_with_a_curled_index_fires_one_click_not_two(close: float) -> None:
+    """Both pinch pairs close, so both used to resolve — a left *and* a right click.
+
+    Parametrized over the threshold a real calibration produced and the shipped default, because
+    both reproduce it. The rule that fixes it is ordinal, so neither value should matter.
+    """
+    engine = _engine(pinch_close=close, pinch_open=close + 0.20)
+
+    _events(engine, _right_click_with_index_curled(1.10), aspect=1.0, now=0.00)
+    _events(engine, _right_click_with_index_curled(0.15), aspect=1.0, now=0.05)
+    _events(engine, _right_click_with_index_curled(0.15), aspect=1.0, now=0.10)
+    fired = _events(engine, _right_click_with_index_curled(1.10), aspect=1.0, now=0.20)
+
+    assert fired == ["right_click"]
+
+
+def test_the_pinch_that_went_deepest_owns_the_gesture() -> None:
+    """Which finger the thumb actually reached, not which threshold it crossed first.
+
+    Depth over ordering on purpose: the two distances cross `pinch_close` within a frame or two of
+    each other and in an order that depends on the hand, while the finger the thumb is touching is
+    unambiguous for the whole closure.
+    """
+    engine = _engine(pinch_close=0.4695, pinch_open=0.6695)
+
+    _events(engine, _right_click_with_index_curled(1.10), aspect=1.0, now=0.00)
+    _events(engine, _right_click_with_index_curled(0.15), aspect=1.0, now=0.05)
+
+    debug = engine.update(_right_click_with_index_curled(0.15), aspect=1.0, now=0.10).debug
+    assert debug is not None
+    # Both really are closed — the test would pass vacuously if only one were.
+    assert debug.pinch_index < 0.4695
+    assert debug.pinch_middle < debug.pinch_index
+
+
+def test_a_staggered_release_still_resolves_to_the_deeper_pinch() -> None:
+    """The index sits further from the thumb, so it crosses `pinch_open` *first*.
+
+    A rule that only arbitrated releases landing in the same frame would miss this entirely, and
+    this is the ordering a real hand produces.
+    """
+    engine = _engine(pinch_close=0.4695, pinch_open=0.6695)
+
+    _events(engine, _right_click_with_index_curled(1.10), aspect=1.0, now=0.00)
+    _events(engine, _right_click_with_index_curled(0.15), aspect=1.0, now=0.05)
+    # Partly open: far enough for the index pair to release, not for the middle pair.
+    midway = _events(engine, make_hand(FIST, pinch_middle=0.55), aspect=1.0, now=0.10)
+    assert midway == []
+
+    assert _events(engine, _right_click_with_index_curled(1.10), aspect=1.0, now=0.15) == [
+        "right_click"
+    ]
+
+
+def test_a_held_right_click_does_not_become_a_drag() -> None:
+    """Drag belongs to the index pinch, and the index pair is only incidentally closed here.
+
+    The quieter half of the same defect: without arbitration a long right click starts dragging,
+    which holds a real mouse button down.
+    """
+    engine = _engine(pinch_close=0.4695, pinch_open=0.6695, hold_to_drag_seconds=0.4)
+
+    _events(engine, _right_click_with_index_curled(1.10), aspect=1.0, now=0.00)
+    _events(engine, _right_click_with_index_curled(0.15), aspect=1.0, now=0.05)
+    fired = _events(engine, _right_click_with_index_curled(0.15), aspect=1.0, now=0.60)
+
+    assert fired == []
+    assert engine.update(
+        _right_click_with_index_curled(0.15), aspect=1.0, now=0.70
+    ).gesture != "drag"
+
+
+def test_arbitration_does_not_touch_a_plain_left_click() -> None:
+    """The index pinch is unambiguous — the middle finger is nowhere near the thumb."""
+    engine = _engine(pinch_close=0.4695, pinch_open=0.6695)
+    open_hand = make_hand(POINTING, pinch_index=0.9)
+
+    _events(engine, open_hand, aspect=1.0, now=0.00)
+    _events(engine, make_hand(POINTING, pinch_index=0.15), aspect=1.0, now=0.05)
+    assert _events(engine, open_hand, aspect=1.0, now=0.20) == ["left_click"]
+
+
 def test_held_pinch_becomes_a_drag_not_a_click() -> None:
     engine = _engine()
     open_hand = make_hand(POINTING, pinch_index=0.9)
