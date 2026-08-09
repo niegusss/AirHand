@@ -243,7 +243,12 @@ class SyntheticSource:
             capture_ms=capture_ms,
             inference_ms=inference_ms,
             hand_detected=True,
-            handedness="right",
+            # Matches the geometry `handmodel` actually draws: it places the thumb knuckle to the
+            # left of the pinky knuckle, which in an unmirrored frame is a left hand. Announcing
+            # "right" here taught the same inversion the tracking engine used to apply, to anyone
+            # tuning against `--source synthetic`. Asserted against the landmarks in the tests, so
+            # a change to the drawn pose cannot silently disagree with this label again.
+            handedness="left",
             gesture=gesture,
             landmarks=landmarks,
             cursor={"x": round(anchor[0], 4), "y": round(anchor[1], 4)},

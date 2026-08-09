@@ -17,6 +17,14 @@ const LATENCY_TARGET_MS = 50
  * Tracking and cursor controls live in the app shell rather than here, so they are reachable from
  * every screen. What is left is the one thing this page is for: seeing what the engine sees.
  */
+
+/** Keyed so the lookup is total, including the case where the engine did not classify the hand. */
+const HANDEDNESS_LABEL: Record<'left' | 'right' | 'unknown', string> = {
+  left: 'Left',
+  right: 'Right',
+  unknown: 'Unknown',
+}
+
 export function DashboardPage() {
   const now = useNow()
 
@@ -121,7 +129,11 @@ export function DashboardPage() {
         />
         <StatusTile
           label="Hand"
-          value={handDetected ? (handedness === 'left' ? 'Left' : 'Right') : 'None'}
+          // Three states, not two. The engine reports `null` when it has landmarks but no
+          // classification, and the old ternary turned that into a confident "Right" — inventing
+          // a fact rather than admitting it does not have one. Same rule that makes `activeArea`
+          // null until the screen and the camera are both known.
+          value={handDetected ? HANDEDNESS_LABEL[handedness ?? 'unknown'] : 'None'}
           hint={handDetected ? '21 landmarks' : 'No hand in view'}
           tone={handDetected ? 'live' : 'idle'}
           icon={Hand}

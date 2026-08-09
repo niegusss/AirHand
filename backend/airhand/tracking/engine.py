@@ -45,6 +45,26 @@ class HandResult:
     landmarks: list[list[float]] | None
 
 
+def handedness_label(category_name: str | None) -> str | None:
+    """MediaPipe's hand label, lowercased and otherwise untouched.
+
+    **Never swap Left for Right here.** It was done once, justified by the preview being mirrored
+    for the user, and that reasoning is simply wrong: mirroring a picture does not change which
+    physical hand is in it. The result was a left hand reported as "right" on the Dashboard.
+
+    The only reason anyone ever swaps this output belongs to the **legacy Solutions API**, which
+    documented handedness as assuming a mirrored, selfie-style image. MediaPipe **Tasks** — what
+    this project uses — makes no such assumption and labels the hand it sees. That is now the
+    second Solutions-era assumption to have reached this file; the model variant was the first.
+
+    Pulled out of :meth:`TrackingEngine.detect` as a plain function purely so it can be tested:
+    everything around it needs a live landmarker, which is why the swap survived unexamined.
+    """
+    if category_name is None:
+        return None
+    return category_name.lower()
+
+
 class TrackingEngine:
     """Wraps MediaPipe's HandLandmarker in VIDEO mode.
 
@@ -101,14 +121,13 @@ class TrackingEngine:
             for point in result.hand_landmarks[0]
         ]
 
-        handedness: str | None = None
+        raw = None
         if result.handedness and result.handedness[0]:
-            # MediaPipe labels from the camera's point of view. The preview is mirrored for the
-            # user, so the label the user would expect is the opposite one.
             raw = result.handedness[0][0].category_name
-            handedness = {"Left": "right", "Right": "left"}.get(raw, raw.lower())
 
-        return HandResult(detected=True, handedness=handedness, landmarks=landmarks)
+        return HandResult(
+            detected=True, handedness=handedness_label(raw), landmarks=landmarks
+        )
 
     def close(self) -> None:
         if self._landmarker is not None:
