@@ -90,7 +90,7 @@ Added in 1.6.0. Sent after `status` on connect, and re-broadcast to **every** cl
 ```jsonc
 {
   "type": "settings",
-  "gesture": { "pinchClose": 0.50, "pinchOpen": 0.70, "holdToDragSeconds": 0.4,
+  "gesture": { "pinchClose": 0.18, "pinchOpen": 0.38, "holdToDragSeconds": 0.4,
                "clickLatchSeconds": 0.2, "extendedAngleDegrees": 150.0, "scrollStep": 0.25,
                "dropoutGraceSeconds": 0.15 },
   "pointer": { "minCutoff": 0.8, "beta": 6.0, "dCutoff": 1.0,
@@ -109,7 +109,8 @@ Added in 1.6.0. Sent after `status` on connect, and re-broadcast to **every** cl
     "loaded": true,
     "stale": false,                  // a profile exists but was refused
     "reason": null,
-    "calibrated": false              // 1.7.0 — has the wizard been completed?
+    "calibrated": false,             // 1.7.0 — has the wizard been completed?
+    "savedAt": "2026-08-09T15:27:59+02:00"  // 1.9.0 — null for a profile written before the field
   }
 }
 ```
@@ -147,10 +148,11 @@ reaches a verdict.
   "state": "done",                   // "sampling" | "done" | "failed"
   "samples": 231,
   "secondsRemaining": 0.0,
-  "secondsTotal": 8.0,               // so a progress bar needs no copy of the step durations
+  "secondsTotal": 12.0,              // so a progress bar needs no copy of the step durations
+  "phase": "fist",                   // 1.8.0 — "pinch" | "fist" during the pinch step, else null
   "measurement": { "restingLevel": 0.94, "attempts": 3,
-                   "worstPinch": 0.38, "bestPinch": 0.30 },
-  "suggestion": { "gesture": { "pinchClose": 0.46, "pinchOpen": 0.66 } },
+                   "worstPinch": 0.19, "bestPinch": 0.12, "fistFloor": 0.21 },
+  "suggestion": { "gesture": { "pinchClose": 0.17, "pinchOpen": 0.37 } },
   "reason": null                     // why `failed`, meant to be shown to the user
 }
 ```
@@ -164,6 +166,12 @@ resting hand to fire on its own.
 **`measurement` accompanies a `failed` verdict whenever there was one**, so the user can see what
 was seen rather than only that it did not work. It is null when the session ended before any
 derivation ran — the hand left the frame, or the pipeline stopped.
+
+**`phase` splits the `pinch` step in two** (1.8.0), on the clock rather than on the signal: pinches
+first, then a closed hand. The wizard shows a different prompt for each. The fist is what actually
+bounds the threshold — it is the nearest pose to a pinch that is not one — so a suggestion derived
+without it lands above the closed hand and turns making a fist into a click. Null on every other
+step.
 
 ### `telemetry`
 High frequency (~60 Hz). The client must throttle rendering — never render once per message.
@@ -198,7 +206,7 @@ On the timing fields, because they are easy to misread:
     "pinchMiddle": 0.88,             // thumb tip -> middle tip, same units
     "extended": { "thumb": false, "index": false, "middle": true, "ring": false, "pinky": false },
     "angles":   { "thumb": 141.2, "index": 88.4, "middle": 171.0, "ring": 96.1, "pinky": 92.7 },
-    "thresholds": { "pinchClose": 0.50, "pinchOpen": 0.70 }
+    "thresholds": { "pinchClose": 0.18, "pinchOpen": 0.38 }
   }
 }
 ```
@@ -329,7 +337,7 @@ Added in 1.7.0. Drives the Calibration wizard.
 |---|---|---|---|
 | `neutral` | 3 s | holds the hand where it is comfortable | `cursor.centerX` / `centerY` |
 | `reach` | 6 s | reaches to their comfortable extremes | `cursor.coverage` |
-| `pinch` | 8 s | three deliberate pinches | `gesture.pinchClose` / `pinchOpen` |
+| `pinch` | 12 s | deliberate pinches for 8 s, then a closed hand — see `phase` | `gesture.pinchClose` / `pinchOpen` |
 
 **`start` is refused unless tracking is running** — a measurement with no frames behind it would
 show a countdown and then produce nothing.
@@ -360,6 +368,8 @@ The client compares major versions and refuses on mismatch.
 
 | Version | Change |
 |---|---|
+| 1.9.0 | Added `profile.savedAt` to `settings` — when the profile was last written, ISO 8601 with a UTC offset, or null for one written before the field existed. Additive. |
+| 1.8.0 | Added `phase` to `calibration`, splitting the `pinch` step into a pinch phase and a fist phase, and `fistFloor` to its `measurement`. The step's `secondsTotal` grew 8 s → 12 s. Additive — a 1.7.x client ignores `phase` and shows one prompt for the whole step. |
 | 1.7.0 | Added the calibration channel: the `calibration` message, the `calibrate` command, `cursor.centerX` / `centerY`, `settings.activeArea` and `profile.calibrated`. Additive — a 1.6.x client ignores the new message and never sends a `calibrate`. |
 | 1.6.0 | Added the settings channel: the `settings` message, the `set_settings` command, the `invalid_settings` error code and the `settings` capability. Additive — a 1.5.x client ignores the message and never sends a patch. |
 | 1.5.0 | Added `frameWidth` / `frameHeight` to `status`, so a client can shape the landmark overlay to the camera instead of stretching it to fit. Additive — a 1.4.x client ignores them. |

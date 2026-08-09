@@ -1,5 +1,5 @@
 {
-  "version": "1.9.0",
+  "version": "1.9.1",
   "description": "AirHand Mouse engine <-> desktop UI WebSocket contract. Single source of truth for the protocol version — both the Python engine and the React client read this file so the version cannot drift.",
   "serverToClient": ["hello", "status", "settings", "calibration", "telemetry", "error"],
   "serverToClientBinary": "preview-jpeg",
