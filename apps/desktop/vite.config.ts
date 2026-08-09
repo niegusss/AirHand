@@ -1,0 +1,40 @@
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
+// From `vitest/config`, not `vite`: it is a superset, and sharing one config is what makes the
+// tests see the same `@` alias and the same injected protocol constants as the app. A separate
+// vitest.config.ts would have to repeat the injection below — the drift this whole mechanism
+// exists to prevent.
+import { defineConfig } from 'vitest/config'
+import react from '@vitejs/plugin-react'
+import tailwindcss from '@tailwindcss/vite'
+
+const root = import.meta.dirname
+
+/*
+ * The protocol version and landmark count come from shared/protocol/protocol.json — the same file
+ * the Python engine reads — and are injected at build time. Mirroring them by hand in TypeScript
+ * is exactly the drift systemPatterns.md forbids.
+ */
+const protocolSpec = JSON.parse(
+  readFileSync(path.resolve(root, '../../shared/protocol/protocol.json'), 'utf-8'),
+) as { version: string; landmarkCount: number }
+
+// https://vite.dev/config/
+export default defineConfig({
+  plugins: [react(), tailwindcss()],
+  define: {
+    __PROTOCOL_VERSION__: JSON.stringify(protocolSpec.version),
+    __LANDMARK_COUNT__: JSON.stringify(protocolSpec.landmarkCount),
+  },
+  resolve: {
+    alias: {
+      '@': path.resolve(root, './src'),
+    },
+  },
+  test: {
+    // Node, not jsdom: what is under test is plain TypeScript — wire parsing and store logic.
+    // jsdom and @testing-library go in with the first component test, not before it.
+    environment: 'node',
+    include: ['src/**/*.test.ts'],
+  },
+})

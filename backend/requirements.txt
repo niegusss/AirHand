@@ -1,0 +1,14 @@
+# Runtime dependencies for the AirHand engine.
+#
+# Versions are pinned loosely for now. Pin MediaPipe exactly before the first calibration profile
+# is saved: the model variant and version are stamped into profiles, and an unpinned upgrade
+# silently invalidates them.
+websockets>=13.0
+
+# Computer vision
+mediapipe>=1.0.0
+opencv-python>=4.10
+numpy>=2.0
+
+# Cursor control — the only dependency that writes to the operating system.
+pynput>=1.8

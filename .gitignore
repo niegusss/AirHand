@@ -1,0 +1,49 @@
+# Node
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Tauri / Rust
+target/
+apps/desktop/src-tauri/target/
+apps/desktop/src-tauri/gen/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# Local runtime state (settings + calibration profiles are machine-specific)
+*.log
+.airhand/
+
+# Pointer traces from tools/bench_pointer.py — recordings of one person's hand on one webcam,
+# useful for tuning and meaningless to anyone else.
+backend/traces/
+
+# Editors / OS
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local-only project/tooling files (not for the shared repo)
+brief.md
+.claude/
+.mcp.json
+.spec-workflow/
+scripts/
+CLAUDE.md
+memory-bank/
+PM-QUESTIONS.md

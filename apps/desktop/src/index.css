@@ -1,0 +1,194 @@
+@import 'tailwindcss';
+@import 'tw-animate-css';
+@import 'shadcn/tailwind.css';
+@import '@fontsource-variable/inter';
+
+@custom-variant dark (&:is(.dark *));
+
+/*
+  AirHand Mouse — "Midnight" theme.
+
+  Dark is the only theme (see memory-bank/productContext.md → Visual Style), so the palette is
+  defined on :root as well as .dark. Losing the class must not produce a half-rendered light UI.
+
+  The emerald accent is reserved for LIVE TRACKING state. Do not spend it on ordinary buttons —
+  when everything is emerald, nothing reads as "the cursor is moving right now".
+*/
+
+:root,
+.dark {
+  --radius: 0.5rem;
+
+  --background: oklch(0.16 0.017 256);
+  --foreground: oklch(0.92 0.01 256);
+
+  --card: oklch(0.21 0.02 256);
+  --card-foreground: oklch(0.94 0.008 256);
+
+  --popover: oklch(0.21 0.02 256);
+  --popover-foreground: oklch(0.94 0.008 256);
+
+  /* Neutral primary: the accent belongs to live state, not to chrome. */
+  --primary: oklch(0.75 0.015 256);
+  --primary-foreground: oklch(0.18 0.02 256);
+
+  --secondary: oklch(0.27 0.02 256);
+  --secondary-foreground: oklch(0.92 0.01 256);
+
+  --muted: oklch(0.27 0.02 256);
+  --muted-foreground: oklch(0.68 0.015 256);
+
+  --accent: oklch(0.3 0.022 256);
+  --accent-foreground: oklch(0.94 0.008 256);
+
+  --destructive: oklch(0.65 0.2 18);
+
+  --border: oklch(1 0 0 / 9%);
+  --input: oklch(1 0 0 / 14%);
+  --ring: oklch(0.79 0.17 162);
+
+  /*
+    Pipeline status semantics. These are load-bearing: systemPatterns.md requires that
+    "backend down", "camera off" and "no hand detected" stay visually distinguishable.
+  */
+  --status-live: oklch(0.79 0.17 162); /* emerald — tracking, hand detected */
+  --status-degraded: oklch(0.8 0.15 80); /* amber  — running below target */
+  --status-down: oklch(0.65 0.2 18); /* rose   — backend/camera unavailable */
+  --status-idle: oklch(0.62 0.015 256); /* slate  — connected, not tracking */
+
+  /*
+    Glass. Every floating panel is built from these four values, so the strength of the whole
+    effect is four numbers rather than a sweep through twenty components.
+
+    `--glass-tint` is the safety valve: it is how much of the panel stays opaque, and therefore
+    how much contrast the text on it keeps. If small copy stops reading over a bright camera
+    frame, raise this — do not dim the text.
+  */
+  --glass-tint: 55%;
+  --glass-blur: 28px;
+  --glass-edge: oklch(1 0 0 / 12%);
+  --glass-sheen: oklch(1 0 0 / 8%);
+
+  --chart-1: oklch(0.79 0.17 162);
+  --chart-2: oklch(0.8 0.15 80);
+  --chart-3: oklch(0.65 0.2 18);
+  --chart-4: oklch(0.7 0.13 240);
+  --chart-5: oklch(0.62 0.015 256);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --color-status-live: var(--status-live);
+  --color-status-degraded: var(--status-degraded);
+  --color-status-down: var(--status-down);
+  --color-status-idle: var(--status-idle);
+
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  --font-sans: 'Inter Variable', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-heading: var(--font-sans);
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  html {
+    color-scheme: dark;
+    @apply font-sans;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+  }
+
+  /*
+    Live numeric readouts (FPS, latency, CPU) must not reflow as digits change —
+    a counter that jitters horizontally reads as instability in the pipeline itself.
+  */
+  .tabular {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: 'tnum' 1;
+  }
+
+  :focus-visible {
+    @apply outline-none ring-2 ring-ring ring-offset-2 ring-offset-background;
+  }
+}
+
+@layer components {
+  /*
+    Every panel that floats over the camera feed.
+
+    Defined once because it is legibility, not decoration: the background is moving video, and an
+    opaque card would hide it while a fully transparent one would make small text unreadable. The
+    blur is what lets the feed show through without the text having to compete with it.
+
+    Three parts make it read as a pane of glass rather than a transparent rectangle:
+      - blur *and* saturation, because real glass concentrates colour as well as scattering it;
+      - a bright hairline edge, which is the lit rim of the pane;
+      - two shadows — an inset highlight along the top, and an outer shadow underneath. The pair
+        is what lifts the panel off the background. Without them the effect collapses.
+  */
+  .surface {
+    border-radius: var(--radius-xl);
+    border: 1px solid var(--glass-edge);
+    background-color: color-mix(in oklab, var(--card) var(--glass-tint), transparent);
+    /* No hand-written -webkit- twin: Lightning CSS prefixes from browserslist, and writing both
+       makes it treat them as duplicates and drop the standard property. */
+    backdrop-filter: blur(var(--glass-blur)) saturate(160%);
+    box-shadow:
+      inset 0 1px 0 0 var(--glass-sheen),
+      0 8px 32px -8px oklch(0 0 0 / 45%);
+  }
+
+  /*
+    The one panel that is deliberately NOT glass: cursor actuation while it is armed.
+
+    Opaque, amber, and lifted further off the background. The control that is currently holding
+    the mouse must not blend into anything — that comes from the actuation safety model in
+    progress.md, not from taste. Glass is for panels you are allowed to look past.
+  */
+  .surface-alert {
+    border-radius: var(--radius-xl);
+    border: 1px solid color-mix(in oklab, var(--status-degraded) 60%, transparent);
+    background-color: color-mix(in oklab, var(--status-degraded) 20%, var(--card));
+    box-shadow:
+      inset 0 1px 0 0 var(--glass-sheen),
+      0 10px 36px -8px color-mix(in oklab, var(--status-degraded) 30%, oklch(0 0 0 / 55%));
+  }
+}
