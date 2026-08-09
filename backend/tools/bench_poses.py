@@ -53,6 +53,8 @@ class Segment:
     question: str
     """True when a click here would be wrong. The whole point of the non-click segments."""
     silent: bool
+    """Which event this segment is deliberately producing, if any. Used at segment boundaries."""
+    button: str | None = None
 
 
 # Ordered as recorded. `rest` first so the hand is settled before anything is asked of it.
@@ -65,13 +67,21 @@ SCHEDULE: tuple[Segment, ...] = (
         "the closed-hand floor — the number nobody has ever measured",
         True,
     ),
-    Segment("left", 8, "LEFT click: touch thumb to index finger, release", "real left clicks", False),
+    Segment(
+        "left",
+        8,
+        "LEFT click: touch thumb to index finger, release",
+        "real left clicks",
+        False,
+        button="left_click",
+    ),
     Segment(
         "right",
         8,
         "RIGHT click: touch thumb to MIDDLE finger, release — hold your hand naturally",
         "does a right click also close the index pair",
         False,
+        button="right_click",
     ),
     Segment(
         "scroll", 3, "scroll pose: index and middle straight, others folded", "must stay silent", True
@@ -79,6 +89,15 @@ SCHEDULE: tuple[Segment, ...] = (
 )
 
 SECONDS_PER_REP = 2.0
+
+"""How long after a prompt change a click may still belong to the previous prompt.
+
+The schedule advances on a clock; the hand does not. A click is defined by its *release*, so a
+pinch begun near the end of one segment resolves inside the next one — measured at up to 0.33 s
+past the boundary on `traces/poses.jsonl`. Attributed naively, that lands as a phantom click in a
+segment that is supposed to be silent, and the tool then calls a working threshold unusable.
+"""
+BOUNDARY_SECONDS = 0.5
 
 
 @dataclass
@@ -93,6 +112,8 @@ class SegmentStats:
     events: list[str] = field(default_factory=list)
     """Frames where both pinch pairs were closed at once — the left/right cross-talk, counted."""
     both_closed: int = 0
+    """Events recorded here that arrived after this segment's own frames — see `_attribute`."""
+    borrowed: int = 0
 
 
 def _percentile(values: list[float], fraction: float) -> float:
@@ -100,6 +121,37 @@ def _percentile(values: list[float], fraction: float) -> float:
         return float("nan")
     ordered = sorted(values)
     return ordered[max(0, min(len(ordered) - 1, int(fraction * (len(ordered) - 1))))]
+
+
+def _attribute(
+    event: str,
+    stats: dict[str, SegmentStats],
+    segment: SegmentStats,
+    previous: Segment | None,
+    since_boundary: float,
+) -> None:
+    """Credit one event to the segment whose gesture produced it.
+
+    Almost always that is the segment the frame is labelled with. The exception is the seam: a
+    click released just after the prompt changed was made under the previous prompt, and counting
+    it against the new one invents a phantom click in a segment meant to be silent.
+
+    **The exception is kept as narrow as it can be**, because a wide one would hide exactly the
+    defects this tool exists to find. All three must hold: inside `BOUNDARY_SECONDS` of the
+    change, the previous segment was deliberately producing a button, and it is *that* button.
+    A spurious left click at the start of `fist` after the `left` segment is the one case this
+    cannot tell apart — it is charged to `left`, and the sweep says so out loud.
+    """
+    if (
+        since_boundary < BOUNDARY_SECONDS
+        and previous is not None
+        and previous.button == event
+    ):
+        owner = stats.setdefault(previous.name, SegmentStats(previous.name))
+        owner.events.append(event)
+        owner.borrowed += 1
+        return
+    segment.events.append(event)
 
 
 def _run(trace: tracefile.Trace, config: GestureConfig) -> dict[str, SegmentStats]:
@@ -111,16 +163,27 @@ def _run(trace: tracefile.Trace, config: GestureConfig) -> dict[str, SegmentStat
     landmark_filter = LandmarkFilter(count=landmark_count())
     engine = GestureEngine(config=config)
     aspect = trace.frame_aspect
+    by_name = {segment.name: segment for segment in SCHEDULE}
 
     stats: dict[str, SegmentStats] = {}
     previous_t: float | None = None
+    current_name: str | None = None
+    previous_segment: Segment | None = None
+    segment_started_at = 0.0
 
     for frame in trace.frames:
         name = str(frame.get("segment", "?"))
+        now = frame["t"]
+
+        if name != current_name:
+            previous_segment = by_name.get(current_name) if current_name is not None else None
+            current_name = name
+            segment_started_at = now
+
         segment = stats.setdefault(name, SegmentStats(name))
         segment.frames += 1
+        since_boundary = now - segment_started_at
 
-        now = frame["t"]
         dt = 0.0 if previous_t is None else now - previous_t
         previous_t = now
 
@@ -128,13 +191,15 @@ def _run(trace: tracefile.Trace, config: GestureConfig) -> dict[str, SegmentStat
         if raw is None:
             landmark_filter.reset()
             update = engine.update(None, aspect=aspect, now=now)
-            segment.events.extend(event.type.value for event in update.events)
+            for event in update.events:
+                _attribute(event.type.value, stats, segment, previous_segment, since_boundary)
             continue
 
         segment.detected += 1
         smoothed = landmark_filter.filter(raw, dt) if dt > 0 else raw
         update = engine.update(smoothed, aspect=aspect, now=now)
-        segment.events.extend(event.type.value for event in update.events)
+        for event in update.events:
+            _attribute(event.type.value, stats, segment, previous_segment, since_boundary)
 
         debug = update.debug
         if debug is not None:
@@ -167,7 +232,7 @@ def _distances(stats: dict[str, SegmentStats]) -> None:
         )
 
 
-def _sweep(trace: tracefile.Trace, candidates: list[float], band: float) -> None:
+def _sweep(trace: tracefile.Trace, candidates: list[float], band: float, hold: float) -> None:
     """What the real engine emits at each candidate threshold, per segment.
 
     The columns that matter are the *silent* segments. A threshold is only usable if `rest`, `fist`
@@ -175,7 +240,7 @@ def _sweep(trace: tracefile.Trace, candidates: list[float], band: float) -> None
     because the user cannot see why it happened.
     """
     print("  what the engine emits at each candidate pinch_close")
-    print(f"  (band held at {band:.2f}, so pinch_open moves with it)")
+    print(f"  (band held at {band:.2f}, so pinch_open moves with it; hold_to_drag {hold:.2f}s)")
     print()
     header = f"    {'close':>6}"
     for segment in SCHEDULE:
@@ -185,8 +250,13 @@ def _sweep(trace: tracefile.Trace, candidates: list[float], band: float) -> None
     print("    " + "-" * (6 + 14 * len(SCHEDULE) + 12))
 
     for close in candidates:
-        stats = _run(trace, GestureConfig(pinch_close=close, pinch_open=close + band))
-        row = f"    {close:>6.2f}"
+        stats = _run(
+            trace,
+            GestureConfig(
+                pinch_close=close, pinch_open=close + band, hold_to_drag_seconds=hold
+            ),
+        )
+        row = f"    {close:>6.3f}"
         noise = 0
         crosstalk = 0
         left = right = 0
@@ -224,16 +294,22 @@ def _sweep(trace: tracefile.Trace, candidates: list[float], band: float) -> None
         elif left >= expected_left and right >= expected_right:
             verdict = "clean"
         else:
-            verdict = f"misses {expected_left - left}L {expected_right - right}R"
+            # Clamped: a segment can overshoot (one rep that closed twice), and "misses -1L" reads
+            # like a defect in the row rather than a count of what did not happen.
+            verdict = (
+                f"misses {max(0, expected_left - left)}L {max(0, expected_right - right)}R"
+            )
         print(row + f"   {verdict}")
 
 
-def replay(path: Path, *, close: float, band: float) -> int:
+def replay(path: Path, *, close: float, band: float, hold: float) -> int:
     trace = tracefile.load(path)
     if not trace.frames:
         raise SystemExit("the trace is empty")
 
-    config = GestureConfig(pinch_close=close, pinch_open=close + band)
+    config = GestureConfig(
+        pinch_close=close, pinch_open=close + band, hold_to_drag_seconds=hold
+    )
     stats = _run(trace, config)
 
     detected = sum(1 for frame in trace.frames if frame["landmarks"])
@@ -247,7 +323,10 @@ def replay(path: Path, *, close: float, band: float) -> int:
     _distances(stats)
     print()
 
-    print(f"  at the profile's own threshold (close {close:.4f}, open {close + band:.4f})")
+    print(
+        f"  at the profile's own threshold (close {close:.4f}, open {close + band:.4f}, "
+        f"hold {hold:.2f}s)"
+    )
     print()
     for segment in SCHEDULE:
         found = stats.get(segment.name)
@@ -259,6 +338,14 @@ def replay(path: Path, *, close: float, band: float) -> int:
         summary = ", ".join(f"{count}× {name}" for name, count in sorted(counts.items())) or "nothing"
         flag = "  <-- SPURIOUS" if segment.silent and counts else ""
         print(f"    {segment.name:<8} {summary}{flag}")
+        if found.borrowed:
+            # Said out loud, because it is the one place the tool moves a number from the segment
+            # it was recorded in. Silently corrected counts are how a measurement stops being one.
+            print(
+                f"             {found.borrowed} of these released after the prompt had already "
+                f"changed (within {BOUNDARY_SECONDS:.1f}s) — counted here, where the gesture "
+                "was made"
+            )
         if found.both_closed:
             # Not a failure by itself — it is the condition arbitration exists to handle, and
             # seeing it is how you know the arbitration is being exercised rather than skipped.
@@ -268,7 +355,15 @@ def replay(path: Path, *, close: float, band: float) -> int:
             )
     print()
 
-    _sweep(trace, [round(0.15 + 0.05 * step, 2) for step in range(10)], band)
+    # Fine where the answer lives and coarse above it. Everything that decides a usable threshold
+    # for a closed hand sits between 0.10 and 0.20 — the old grid started at 0.15 and stepped 0.05,
+    # which is three points across the entire region of interest.
+    candidates = [round(0.100 + 0.025 * step, 3) for step in range(9)]
+    candidates += [round(0.35 + 0.05 * step, 2) for step in range(6)]
+    # The shipped default always gets a row, wherever the grid happens to fall. It is the value
+    # every uncalibrated hand — and every "Restore defaults" — actually runs on.
+    candidates = sorted({*candidates, GestureConfig().pinch_close, close})
+    _sweep(trace, candidates, band, hold)
     return 0
 
 
@@ -400,6 +495,14 @@ def main(argv: list[str] | None = None) -> int:
         default=GestureConfig().pinch_open - GestureConfig().pinch_close,
         help="Hysteresis band; pinch_open is close + band.",
     )
+    parser.add_argument(
+        "--hold",
+        type=float,
+        default=GestureConfig().hold_to_drag_seconds,
+        # Pass your profile's value. It changes what the *left* column can be — past this, a pinch
+        # is a drag — so a sweep run at a different hold is answering a different question.
+        help="hold_to_drag_seconds to replay at.",
+    )
     args = parser.parse_args(argv)
 
     if args.record:
@@ -409,7 +512,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.synthetic:
         return synthesize(args.synthetic, fps=args.fps)
     if args.replay:
-        return replay(args.replay, close=args.close, band=args.band)
+        return replay(args.replay, close=args.close, band=args.band, hold=args.hold)
 
     parser.print_help()
     return 1
