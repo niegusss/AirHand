@@ -61,6 +61,15 @@ export function MeasureStep({
 
       {sampling ? (
         <div>
+          {/* The live instruction, when the engine says the step has moved on to its second half.
+              It has to be prominent: the user is watching their own hand, not this panel, and a
+              phase they miss is a measurement that comes back empty. */}
+          {session.phase && definition.phases?.[session.phase] ? (
+            <p className="mb-3 rounded-md border border-status-live/40 bg-status-live/5 px-3 py-2 text-sm text-foreground">
+              {definition.phases[session.phase]}
+            </p>
+          ) : null}
+
           <div className="flex items-baseline justify-between">
             <span className="text-xs font-medium text-status-live">Measuring…</span>
             <span className="tabular text-sm text-foreground">

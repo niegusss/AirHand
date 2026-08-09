@@ -32,7 +32,11 @@ State = Literal["sampling", "done", "failed"]
 
 # How long each measurement runs. The pinch step gets the most because the user has to perform
 # three separate deliberate actions inside it, at their own pace.
-STEP_SECONDS: dict[Step, float] = {"neutral": 3.0, "reach": 6.0, "pinch": 8.0}
+STEP_SECONDS: dict[Step, float] = {"neutral": 3.0, "reach": 6.0, "pinch": 12.0}
+
+# The pinch step runs in two phases: deliberate pinches, then a closed hand. The second is not a
+# formality — see PINCH_GAP_FRACTION for what it buys and what its absence cost.
+PINCH_PHASE_SECONDS = 8.0
 
 # Continuous absence that ends a session early. This is meant to catch "the user walked away", not
 # "detection hiccupped" — dropouts are routine, and a pinch is the moment MediaPipe is *most* likely
@@ -55,21 +59,38 @@ MIN_PINCH_ATTEMPTS = 2
 ATTEMPT_DEPTH = 0.15
 MIN_ATTEMPT_SAMPLES = 2
 
-# Where the threshold sits in the measured gap between a firm pinch and the resting hand.
+# Where the threshold sits between a firm pinch and the nearest thing that could be mistaken for
+# one.
 #
-# **Proportional, not a fixed offset.** A first version added a flat 0.08 above the worst attempt,
-# and a real measurement (2026-08-08: worst 0.18, resting 1.16) exposed it: in a gap 0.98 wide it
-# produced 0.26, hugging the pinch side and leaving nearly the whole range unused. That is the
-# pass-10 bug reproduced — eight seconds of deliberate pinches only ever contains *clean* ones, and
-# the clicks that get lost are the ones where an occluded thumb pushes the estimate up. The width
-# of the gap is the information the measurement bought; the margin has to spend it.
+# **The ceiling is the closed hand, not the resting hand.** The first version measured the gap up
+# to the *resting* level and put the threshold a third of the way across it. On a real hand
+# (2026-08-09: worst pinch 0.10, resting 1.16) that produced **0.4695** — and a fist on that same
+# hand reaches **0.195**. The threshold was placed most of the way up a gap that is mostly empty
+# space, far above the only pose that can actually be confused with a pinch. Measured consequences,
+# all three observed in one recording: closing the hand fired five drags, five of eight left clicks
+# became drags, and every right click became nothing at all.
 #
-# 0.35 rather than a half: the resting level is a p90, so there is more room above the threshold
-# than below it, and the pinch side is where a missed click costs the user something.
-PINCH_GAP_FRACTION = 0.35
+# Anchoring to the fist floor makes the gap the real one. A half rather than a third, because both
+# ends are now genuine measurements of confusable poses, so the midpoint is the honest place to
+# stand — there is no reason to lean toward either.
+PINCH_GAP_FRACTION = 0.5
 
-# Floor for a genuinely narrow gap, where a fraction would leave no headroom at all.
-MIN_PINCH_MARGIN = 0.08
+# Clearance kept under the observed fist floor, so the threshold is not sitting exactly on the
+# deepest a closed hand was seen to reach.
+FIST_MARGIN = 0.03
+
+# How far the fingers must actually travel below the resting hand for the gesture to be a pinch at
+# all, in multiples of hand scale.
+#
+# This is the pass-10 refusal restated as the thing it was always really measuring. The first
+# version expressed it through margins on the threshold, which made it depend on how wide the gap
+# happened to be — and a hand whose fist sits close to its pinch has a genuinely narrow gap while
+# still pinching perfectly well, so a margin rule refuses it for the wrong reason.
+#
+# Travel is the honest quantity. Measured: a firm pinch travels ~1.06 (2026-08-09, worst attempt
+# 0.10 against a hand resting at 1.16), while per-frame noise on an open hand covers about 0.06
+# (pass 10: median 0.915, dipping to 0.853). 0.30 sits well clear of both.
+MIN_PINCH_TRAVEL = 0.30
 
 # Clearance the threshold must keep below the resting level. This is the pass-10 measurement turned
 # into a rule: on a real 20 s trace an open hand read a median 0.915 but dipped to 0.853, so a
@@ -102,6 +123,9 @@ class CalibrationResult:
     """How long this step runs in total. Sent so a client can draw a progress bar without keeping
     its own copy of `STEP_SECONDS` — a copy that would go wrong the day a duration is retuned."""
     seconds_total: float = 0.0
+    """Which instruction to show right now, for steps that ask for more than one thing. None for
+    steps that ask for a single pose. Added in protocol 1.8.0."""
+    phase: str | None = None
     measurement: dict[str, Any] | None = None
     """A `set_settings` patch, or None when the measurement did not support one."""
     suggestion: dict[str, dict[str, float]] | None = None
@@ -115,6 +139,7 @@ class CalibrationResult:
             "samples": self.samples,
             "secondsRemaining": round(self.seconds_remaining, 2),
             "secondsTotal": round(self.seconds_total, 2),
+            "phase": self.phase,
             "measurement": self.measurement,
             "suggestion": self.suggestion,
             "reason": self.reason,
@@ -142,6 +167,13 @@ class CalibrationSession:
 
         self._anchors: list[tuple[float, float]] = []
         self._pinches: list[float] = []
+        """Thumb-to-index readings from the closed-hand phase, kept apart from the pinch ones.
+
+        Split by the clock rather than found in the signal: a fist and a pinch overlap in this
+        measurement — that overlap is the entire problem — so nothing in the numbers themselves can
+        tell them apart. The prompt is what labels them.
+        """
+        self._fists: list[float] = []
         self._lost_since: float | None = None
         self._failure: str | None = None
         self._done = False
@@ -151,6 +183,18 @@ class CalibrationSession:
     @property
     def finished(self) -> bool:
         return self._done
+
+    @property
+    def phase(self) -> str | None:
+        """Which instruction the user should be following right now.
+
+        Only the pinch step has phases. It asks for two different things and the second one — a
+        closed hand — is what bounds the threshold from above; a step that only ever showed
+        "pinch three times" would collect no evidence about it.
+        """
+        if self.step != "pinch":
+            return None
+        return "pinch" if self._now - self._started_at < PINCH_PHASE_SECONDS else "fist"
 
     def cancel(self) -> None:
         """End the session without a verdict — the client navigated away or tracking stopped."""
@@ -167,7 +211,10 @@ class CalibrationSession:
             if observation.anchor is not None:
                 self._anchors.append(observation.anchor)
             if observation.pinch_index is not None:
-                self._pinches.append(observation.pinch_index)
+                if self.phase == "fist":
+                    self._fists.append(observation.pinch_index)
+                else:
+                    self._pinches.append(observation.pinch_index)
         else:
             if self._lost_since is None:
                 self._lost_since = now
@@ -199,6 +246,7 @@ class CalibrationSession:
             samples,
             remaining,
             seconds_total=self._duration,
+            phase=self.phase if state == "sampling" else None,
             **fields,
         )
 
@@ -321,21 +369,49 @@ class CalibrationSession:
             )
 
         worst = max(minima)
-        close = worst + max(MIN_PINCH_MARGIN, PINCH_GAP_FRACTION * (resting - worst))
-        if close > resting - OPEN_HAND_MARGIN:
-            # The refusal that matters. A threshold this close to the resting level fires on an
-            # open hand, and a phantom click is a worse failure than the missed click this step is
-            # here to fix — see the 0.853 measurement in progress.md.
+
+        # The p02 rather than the minimum, for the same reason nothing else here is a min: one
+        # frame of a badly-estimated thumb would otherwise define the ceiling for the whole hand.
+        fist_floor = _percentile(self._fists, 0.02) if self._fists else None
+        measurement["fistFloor"] = round(fist_floor, 4) if fist_floor is not None else None
+
+        # Two ceilings, and the threshold has to clear both. The open hand was the only one until
+        # 2026-08-09; it is far away and almost never binding. The closed hand is the near one, and
+        # it is what a threshold actually collides with.
+        ceiling = resting - OPEN_HAND_MARGIN
+        if fist_floor is not None:
+            ceiling = min(ceiling, fist_floor - FIST_MARGIN)
+
+        # Two refusals, and both matter for the same reason: a phantom click is a worse failure
+        # than the missed click this step exists to fix. A click that did not land can be repeated;
+        # one that landed somewhere the user was not looking cannot be taken back.
+        if resting - worst < MIN_PINCH_TRAVEL:
             return self._report(
                 "failed",
                 samples,
                 measurement=measurement,
                 reason=(
-                    f"The deepest pinch reached {max(minima):.2f} but an open hand rests at "
-                    f"{resting:.2f} — too close to tell apart, so any threshold here would fire "
-                    "on an open hand. Open the hand fully between attempts and press harder."
+                    f"The weakest pinch only reached {worst:.2f} against an open hand at "
+                    f"{resting:.2f} — barely a move, so any threshold here would fire on an open "
+                    "hand. Press thumb and finger firmly together, and open the hand fully between "
+                    "attempts."
                 ),
             )
+
+        if worst >= ceiling:
+            return self._report(
+                "failed",
+                samples,
+                measurement=measurement,
+                reason=(
+                    f"A closed hand reaches {fist_floor:.2f} and the weakest pinch only reached "
+                    f"{worst:.2f} — too close to tell apart, so any threshold here would fire when "
+                    "you simply close your hand. Pinch with the rest of the hand relaxed rather "
+                    "than curled."
+                ),
+            )
+
+        close = worst + PINCH_GAP_FRACTION * (ceiling - worst)
 
         # The hysteresis band is the user's, carried across unchanged. It is the only thing
         # standing between a hand resting near the threshold and a burst of phantom clicks, so it

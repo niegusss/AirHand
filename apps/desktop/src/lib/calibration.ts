@@ -16,6 +16,14 @@ export interface StepDefinition {
   instruction: string
   /** Why this step exists, in one line — the user is being asked to perform, so say what for. */
   purpose: string
+  /**
+   * Instruction per engine-reported phase, for steps that ask for more than one thing.
+   *
+   * The engine owns the timing, so it names the phase and this maps it to words. Keeping the words
+   * here rather than in the engine is the same split as everywhere else: the measurement is the
+   * engine's, the wording is the UI's.
+   */
+  phases?: Record<string, string>
 }
 
 /** Keyed by step so a lookup is total — there is no "definition not found" case to handle. */
@@ -37,9 +45,13 @@ export const STEP_DEFINITIONS: Record<CalibrationStep, StepDefinition> = {
     step: 'pinch',
     title: 'Click threshold',
     instruction:
-      'Touch your thumb and index finger together firmly, three times, opening your hand fully in between.',
+      'Touch your thumb and index finger together firmly, three times, opening your hand fully in between. Then, when asked, close your hand into a fist.',
     purpose:
-      'Measures your pinch instead of guessing it — this is what decides whether a click registers.',
+      'Measures your pinch against your closed hand — the threshold has to catch one without catching the other.',
+    phases: {
+      pinch: 'Pinch: thumb to index finger, firmly, opening your hand fully in between.',
+      fist: 'Now close your hand into a fist a few times — this is not a click, and the engine needs to see that it is not.',
+    },
   },
 }
 

@@ -18,6 +18,7 @@ import pytest
 
 from airhand.calibration import (
     MIN_PINCH_ATTEMPTS,
+    PINCH_PHASE_SECONDS,
     STEP_SECONDS,
     CalibrationSession,
     Observation,
@@ -198,11 +199,76 @@ def test_a_wide_gap_puts_the_threshold_in_it_rather_than_beside_the_pinch() -> N
         "attempts": 3,
         "worstPinch": pytest.approx(0.18),
         "bestPinch": pytest.approx(0.16),
+        # This hand never closed during the fist phase, so nothing bounds the threshold from
+        # nearby and the open hand is the only ceiling left. See the test below for the opposite.
+        "fistFloor": pytest.approx(1.16),
     }
 
     close = result.suggestion["gesture"]["pinchClose"]  # type: ignore[index]
     assert close > 0.40, "must not hug the pinch side of a gap this wide"
-    assert close < 0.65, "and must stay clear of the resting hand"
+    assert close < 1.01, "and must stay clear of the resting hand"
+
+
+def _then_fist(pinches: list[Observation], level: float) -> list[Observation]:
+    """Pad the pinch attempts out to the phase boundary, then close the hand.
+
+    The split is by the clock, not by the data, so a test that simply appends its fist frames puts
+    them inside the pinch window and measures neither thing. Padding here is what makes the
+    boundary in `PINCH_PHASE_SECONDS` the boundary the test actually exercises.
+    """
+    phase_frames = int(FPS * PINCH_PHASE_SECONDS)
+    assert len(pinches) <= phase_frames, "the attempts do not fit in the pinch phase"
+    padded = pinches + [pinches[0]] * (phase_frames - len(pinches))
+    return padded + [_hand(pinch=level) for _ in range(int(FPS * 4.0))]
+
+
+def test_the_closed_hand_is_what_bounds_the_threshold_not_the_open_one() -> None:
+    """The measurement that produced this, kept as the regression it caused.
+
+    Recorded from a human hand on 2026-08-09: pinches bottoming out near 0.10 against a hand
+    resting at 1.16 — and a **fist reaching 0.195**. Measuring the gap up to the resting level put
+    the threshold at 0.4695, more than twice the fist floor. On that same recording, at that
+    threshold: closing the hand fired five drags, five of eight left clicks became drags because
+    the loose threshold held them past `hold_to_drag_seconds`, and every single right click became
+    nothing at all.
+
+    The resting level is empty space. The fist is the nearest pose that can be confused with a
+    pinch, and it is the only ceiling that was ever binding.
+    """
+    session = CalibrationSession("pinch", settings=DEFAULTS, now=0.0)
+    _run(
+        session,
+        _then_fist(_pinch_series([0.10, 0.12, 0.11], open_level=1.16), 0.195),
+        fill=_hand(pinch=0.195),
+    )
+
+    result = session.result()
+    assert result.state == "done", result.reason
+    assert result.measurement is not None
+    assert result.measurement["fistFloor"] == pytest.approx(0.195, abs=0.01)
+
+    close = result.suggestion["gesture"]["pinchClose"]  # type: ignore[index]
+    assert close < 0.195, "a threshold above the fist floor makes closing your hand a click"
+    assert close > 0.12, "and it still has to catch the weakest pinch that was made"
+
+
+def test_a_fist_as_deep_as_the_pinch_is_refused_rather_than_guessed_at() -> None:
+    """No threshold separates them, so there is no threshold to suggest.
+
+    Refusing costs the user a retry. Suggesting one costs them a click every time they close their
+    hand, landing wherever the cursor happened to be.
+    """
+    session = CalibrationSession("pinch", settings=DEFAULTS, now=0.0)
+    _run(
+        session,
+        _then_fist(_pinch_series([0.20, 0.22, 0.21], open_level=1.16), 0.21),
+        fill=_hand(pinch=0.21),
+    )
+
+    result = session.result()
+    assert result.state == "failed"
+    assert result.suggestion is None
+    assert result.reason is not None and "clos" in result.reason.lower()
 
 
 def test_one_pinch_is_not_enough_to_conclude_anything() -> None:
