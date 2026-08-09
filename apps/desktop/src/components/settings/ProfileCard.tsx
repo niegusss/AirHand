@@ -5,6 +5,20 @@ import { RotateCcw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import type { ProfileInfo } from '@/lib/protocol'
 
+/**
+ * The engine's ISO timestamp, in the reader's own locale.
+ *
+ * Parsed rather than printed raw: the engine writes an offset so the instant is unambiguous, and
+ * `toLocaleString` is what turns that back into the wall clock the user was looking at. A string
+ * that fails to parse is shown as it arrived — it is still the truth about the file, and hiding it
+ * would lose the only clue to why it is malformed.
+ */
+function formatSavedAt(savedAt: string | null): string {
+  if (savedAt === null) return 'not recorded'
+  const at = new Date(savedAt)
+  return Number.isNaN(at.getTime()) ? savedAt : at.toLocaleString()
+}
+
 interface ProfileCardProps {
   profile: ProfileInfo | null
   disabled?: boolean
@@ -57,6 +71,8 @@ export function ProfileCard({ profile, disabled, onReset }: ProfileCardProps) {
           <dd className="text-foreground/80">
             {profile.calibrated ? 'yes' : 'no — the wizard has not been completed'}
           </dd>
+          <dt className="text-muted-foreground">Last saved</dt>
+          <dd className="text-foreground/80">{formatSavedAt(profile.savedAt)}</dd>
         </dl>
       )}
 

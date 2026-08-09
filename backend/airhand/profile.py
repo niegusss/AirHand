@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -43,6 +44,19 @@ def default_profile_path() -> Path:
     return app_data_dir() / PROFILE_FILENAME
 
 
+def now_stamp() -> str:
+    """Current local time with its UTC offset, to the second.
+
+    Public so a caller that has to *report* the save time can generate it once and hand the same
+    string to :func:`save_profile`. Reading the clock twice would let the file and the message the
+    UI receives disagree by a second, which is a small lie about the same event.
+
+    Seconds rather than microseconds: this is a human-facing record of when settings last changed,
+    and six decimal places imply a precision the answer does not have.
+    """
+    return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
 @dataclass(frozen=True)
 class LoadedProfile:
     """What was loaded, and the honest story about it for the UI."""
@@ -61,6 +75,14 @@ class LoadedProfile:
     first run" check without anyone having calibrated. Only `calibrate/complete` sets this.
     """
     calibrated: bool = False
+    """When this file was last written, ISO 8601 with a UTC offset. None for a profile that was
+    never saved, or one written before the field existed.
+
+    Stored in the file rather than read from its filesystem timestamp: an mtime is reset by copying,
+    syncing or restoring the file, and the question this answers — "when did these numbers last
+    change?" — has to survive all three.
+    """
+    saved_at: str | None = None
 
     def to_message(self) -> dict[str, Any]:
         return {
@@ -69,6 +91,7 @@ class LoadedProfile:
             "stale": self.stale,
             "reason": self.reason,
             "calibrated": self.calibrated,
+            "savedAt": self.saved_at,
         }
 
 
@@ -124,13 +147,24 @@ def load_profile(path: Path | None = None) -> LoadedProfile:
         )
 
     log.info("Loaded calibration profile from %s", resolved)
+    saved_at = stored.get("savedAt")
     return LoadedProfile(
-        settings, resolved, loaded=True, calibrated=bool(stored.get("calibrated", False))
+        settings,
+        resolved,
+        loaded=True,
+        calibrated=bool(stored.get("calibrated", False)),
+        # Read back as whatever is there. Profiles written before this field existed simply have
+        # none, and that is a true statement about them — inventing a date would not be.
+        saved_at=saved_at if isinstance(saved_at, str) else None,
     )
 
 
 def save_profile(
-    settings: EngineSettings, path: Path | None = None, *, calibrated: bool = False
+    settings: EngineSettings,
+    path: Path | None = None,
+    *,
+    calibrated: bool = False,
+    saved_at: str | None = None,
 ) -> str | None:
     """Persist the settings. Returns None on success, or a human-readable reason on failure.
 
@@ -150,6 +184,11 @@ def save_profile(
         "modelVariant": MODEL_VARIANT,
         "modelVersion": MODEL_VERSION,
         "calibrated": calibrated,
+        # Local time *with its offset*, not a bare local timestamp and not bare UTC. The offset
+        # keeps it unambiguous, and local time is what the user recognises — this file is theirs,
+        # read on the machine that wrote it, and "16:32+02:00" answers "was that before or after I
+        # changed the threshold?" without anyone doing timezone arithmetic.
+        "savedAt": saved_at or now_stamp(),
         "settings": to_values(settings),
     }
     try:

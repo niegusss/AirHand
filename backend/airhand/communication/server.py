@@ -19,7 +19,7 @@ from .. import protocol
 from ..calibration import CalibrationResult
 from ..cursor.mapping import active_area_for
 from ..pipeline import SourceStatus, TelemetrySource
-from ..profile import LoadedProfile, save_profile
+from ..profile import LoadedProfile, now_stamp, save_profile
 from ..settings import DEFAULTS, EngineSettings, InvalidSettings, merge, settings_message
 
 log = logging.getLogger(__name__)
@@ -70,6 +70,9 @@ class EngineServer:
         self._settings = settings or (profile.settings if profile else DEFAULTS)
         self._profile_reason = profile.reason if profile else None
         self._saved = False
+        """When the profile was last written. Starts as whatever the loaded file recorded, then
+        tracks this session's own writes — the on-disk value moves and the UI has to move with it."""
+        self._saved_at = profile.saved_at if profile else None
         # Whether the user has been through the wizard, as opposed to merely having a profile on
         # disk. Every settings change writes that file, so `loaded` says nothing about calibration.
         # Held here because `save_profile` is told the flag rather than merging it from disk.
@@ -280,10 +283,20 @@ class EngineServer:
         """
         if self._profile is None:
             return
+        # Generated here and handed to the writer, so the file and the `settings` broadcast carry
+        # the identical string. Letting each read the clock would put them a second apart often
+        # enough to be noticed, and they describe the same event.
+        stamp = now_stamp()
         self._profile_reason = await asyncio.to_thread(
-            save_profile, self._settings, self._profile.path, calibrated=self._calibrated
+            save_profile,
+            self._settings,
+            self._profile.path,
+            calibrated=self._calibrated,
+            saved_at=stamp,
         )
         self._saved = True
+        if self._profile_reason is None:
+            self._saved_at = stamp
 
     def _settings_message(self) -> dict[str, Any]:
         area = self._active_area()
@@ -302,6 +315,7 @@ class EngineServer:
                 "stale": self._profile.stale and not self._saved,
                 "reason": self._profile_reason,
                 "calibrated": self._calibrated,
+                "savedAt": self._saved_at,
             },
         )
 

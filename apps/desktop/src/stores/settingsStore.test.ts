@@ -75,6 +75,7 @@ function message(overrides: Partial<SettingsMessage> = {}): SettingsMessage {
       stale: false,
       reason: null,
       calibrated: true,
+      savedAt: '2026-08-09T13:41:39+02:00',
     },
     activeArea: { left: 0.15, top: 0.24, width: 0.7, height: 0.52 },
     ...overrides,

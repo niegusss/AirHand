@@ -10,6 +10,7 @@ function profile(overrides: Partial<ProfileInfo> = {}): ProfileInfo {
     stale: false,
     reason: null,
     calibrated: true,
+    savedAt: '2026-08-09T13:41:39+02:00',
     ...overrides,
   }
 }

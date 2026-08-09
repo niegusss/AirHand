@@ -202,6 +202,13 @@ export interface ProfileInfo {
    * run" check without anyone having calibrated. Only this field answers that question.
    */
   calibrated: boolean
+  /**
+   * When the profile was last written, ISO 8601 with a UTC offset. Added in protocol 1.9.0.
+   *
+   * Null for a profile that was never saved, or one written before the engine recorded this. Kept
+   * in the file rather than read from its mtime, which copying or syncing resets.
+   */
+  savedAt: string | null
 }
 
 export type CalibrationStep = 'neutral' | 'reach' | 'pinch'
@@ -221,6 +228,15 @@ export interface CalibrationMessage {
   secondsRemaining: number
   /** How long this step runs in total, so a progress bar needs no copy of the step durations. */
   secondsTotal: number
+  /**
+   * Which instruction to show right now, for a step that asks for more than one thing.
+   * Added in protocol 1.8.0; null for steps with a single pose, and null once a step has finished.
+   *
+   * The pinch step has two: deliberate pinches, then a closed hand. The second bounds the
+   * threshold from above and cannot be inferred from the first — a fist and a pinch overlap in
+   * the measurement, which is precisely the problem it exists to solve.
+   */
+  phase: string | null
   /** Raw numbers behind the verdict. Present even on failure, so the user can see what was seen. */
   measurement: Record<string, number | null> | null
   /**

@@ -11,6 +11,7 @@ landmark placement, so a profile written under a different model is not evidence
 from __future__ import annotations
 
 import json
+from datetime import datetime
 
 import pytest
 
@@ -127,6 +128,47 @@ def test_the_stamp_is_written_from_the_running_model(profile_path) -> None:
 
     assert stored["modelVariant"] == MODEL_VARIANT
     assert stored["modelVersion"] == MODEL_VERSION
+
+
+def test_every_save_records_when_it_happened(profile_path) -> None:
+    """Stored in the file, not taken from its mtime — copying or syncing resets an mtime."""
+    save_profile(DEFAULTS, profile_path)
+    stored = json.loads(profile_path.read_text(encoding="utf-8"))
+
+    # Parses as ISO 8601 and carries an offset, so it means one instant rather than "16:32 somewhere".
+    stamped = datetime.fromisoformat(stored["savedAt"])
+    assert stamped.tzinfo is not None, "a bare local timestamp is ambiguous"
+    assert abs((datetime.now().astimezone() - stamped).total_seconds()) < 60
+
+    assert load_profile(profile_path).saved_at == stored["savedAt"]
+
+
+def test_the_stamp_moves_when_the_profile_is_written_again(profile_path) -> None:
+    """It is the date of the last *change*, so a second save must not keep the first one's."""
+    save_profile(DEFAULTS, profile_path)
+    first = load_profile(profile_path).saved_at
+
+    stored = json.loads(profile_path.read_text(encoding="utf-8"))
+    stored["savedAt"] = "2020-01-01T00:00:00+00:00"
+    profile_path.write_text(json.dumps(stored), encoding="utf-8")
+    assert load_profile(profile_path).saved_at == "2020-01-01T00:00:00+00:00"
+
+    save_profile(DEFAULTS, profile_path)
+    assert load_profile(profile_path).saved_at != "2020-01-01T00:00:00+00:00"
+    assert first is not None
+
+
+def test_a_profile_written_before_the_field_existed_still_loads(profile_path) -> None:
+    """No date is the truth about those files. Inventing one would not be."""
+    save_profile(merge(DEFAULTS, {"cursor": {"coverage": 0.9}}), profile_path)
+    stored = json.loads(profile_path.read_text(encoding="utf-8"))
+    del stored["savedAt"]
+    profile_path.write_text(json.dumps(stored), encoding="utf-8")
+
+    loaded = load_profile(profile_path)
+    assert loaded.loaded is True, "a missing date is not a reason to refuse a profile"
+    assert loaded.saved_at is None
+    assert loaded.settings.cursor.coverage == 0.9
 
 
 def test_a_failed_write_reports_a_reason_instead_of_raising(tmp_path) -> None:

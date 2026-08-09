@@ -512,6 +512,37 @@ def test_completing_the_wizard_is_what_marks_the_profile_calibrated(tmp_path: Pa
     assert load_profile(profile_path).calibrated is True
 
 
+def test_the_save_time_on_the_wire_is_the_one_in_the_file(tmp_path: Path) -> None:
+    """One event, one timestamp.
+
+    The `settings` message builds its profile block by hand, beside `LoadedProfile.to_message()`
+    rather than through it — a duplication that already swallowed this field once. This asserts the
+    two agree exactly, so the next divergence fails here instead of showing the user a date their
+    file does not contain.
+    """
+    profile_path = tmp_path / "profile.json"
+
+    async def scenario() -> tuple[dict, dict]:
+        server = _server(profile=load_profile(profile_path))
+        task = await _serve(server)
+        try:
+            async with connect(f"ws://127.0.0.1:{server.port}") as client:
+                await _authenticate(client)
+                fresh = await _await_type(client, "settings")
+
+                await client.send(json.dumps({"type": "set_settings", "pointer": {"beta": 4.5}}))
+                return fresh, await _await_type(client, "settings")
+        finally:
+            task.cancel()
+            await server.close()
+
+    fresh, saved = _run(scenario())
+    # Nothing had been written yet, so there is no date to report and none is invented.
+    assert fresh["profile"]["savedAt"] is None
+    assert saved["profile"]["savedAt"] == load_profile(profile_path).saved_at
+    assert saved["profile"]["savedAt"] is not None
+
+
 def test_an_ordinary_settings_change_does_not_undo_the_calibrated_mark(tmp_path: Path) -> None:
     """The trap in writing the whole profile on every change: the flag has to be carried across."""
     profile_path = tmp_path / "profile.json"
