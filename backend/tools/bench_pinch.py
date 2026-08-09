@@ -48,8 +48,13 @@ class Attempt:
     closed_first_at: float | None = None
     closed_last_at: float | None = None
     events: list[str] = field(default_factory=list)
-    """Both pinch pairs closed at once. Latent defect bait: the release blocks in `_classify` are
-    independent, so both a left and a right click could fire from one gesture."""
+    """Both pinch pairs closed at once.
+
+    Written as bait for a defect that was still latent, and which `bench_poses.py` caught on
+    2026-08-09: the release blocks in `_classify` were independent, so one gesture emitted a left
+    *and* a right click. `GestureEngine._owner` now arbitrates, and this count stays as the signal
+    that the arbitration is being exercised rather than skipped.
+    """
     both_closed: bool = False
 
     @property
