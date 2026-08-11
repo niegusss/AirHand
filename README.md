@@ -192,6 +192,10 @@ npm install
 npm run tauri dev
 ```
 
+The Rust build needs `src-tauri/engine/` to exist, because `bundle.resources` fails on a glob that
+matches nothing. On a fresh clone, freeze the engine once first — the two commands under
+[Building the installer](#building-the-installer), up to and including `npm run engine:sync`.
+
 The shell finds the engine through the handshake file and adopts it. No webcam at hand? Add
 `--source synthetic` and the UI gets a scripted hand instead. For browser-only iteration
 (`npm run dev`) the port and token have to be pinned on both sides — a browser cannot read the
