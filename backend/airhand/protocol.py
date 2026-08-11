@@ -12,7 +12,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
 
-ENGINE_VERSION = "0.1.0"
+ENGINE_VERSION = "0.2.0"
 
 CameraState = Literal["off", "starting", "on", "error"]
 TrackingState = Literal["idle", "running", "paused"]
@@ -77,7 +77,35 @@ def hello() -> dict[str, Any]:
         "engineVersion": ENGINE_VERSION,
         # "preview" is advertised by the engine, not by the source: whether a *particular* source
         # can produce frames is a separate question, answered by frames simply not arriving.
-        "capabilities": ["telemetry", "preview", "settings", "calibration"],
+        "capabilities": ["telemetry", "preview", "settings", "calibration", "cameras"],
+    }
+
+
+def cameras(
+    *,
+    devices: list[dict[str, Any]],
+    selected: int | None,
+    scanning: bool = False,
+    reason: str | None = None,
+) -> dict[str, Any]:
+    """The `cameras` server→client message. Added in 1.10.0.
+
+    Broadcast rather than answered to whoever asked, for the same reason as `settings` and
+    `calibration`: a scan restarts the pipeline, so every connected window has to learn about it.
+
+    `selected` is what the engine will open *next*, which is not always what it has open now — a
+    device chosen while the pipeline is stopped takes effect on the next start. `status.cameraIndex`
+    answers the other question.
+    """
+    return {
+        "type": "cameras",
+        # True only while a probe is in flight. It exists so the UI can disable the control rather
+        # than let a second scan stack up behind the first.
+        "scanning": scanning,
+        "devices": devices,
+        "selected": selected,
+        # Why a scan or a selection could not be honoured, meant to be shown. None on success.
+        "reason": reason,
     }
 
 
@@ -86,6 +114,7 @@ def status(
     camera: CameraState,
     tracking: TrackingState,
     camera_name: str | None = None,
+    camera_index: int | None = None,
     cpu_percent: float = 0.0,
     message: str | None = None,
     frame_width: int | None = None,
@@ -101,6 +130,10 @@ def status(
         "camera": camera,
         "tracking": tracking,
         "cameraName": camera_name,
+        # Added in 1.10.0. `cameraName` embeds the index in a display string, and matching a device
+        # against the list by parsing that string would be exactly the kind of second copy this
+        # protocol keeps removing. Null until a source declares one.
+        "cameraIndex": camera_index,
         "cpuPercent": round(cpu_percent, 1),
         "message": message,
         # Added in 1.5.0. Landmarks are normalized against these, so a client that draws them

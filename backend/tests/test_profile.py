@@ -122,6 +122,92 @@ def test_a_profile_holding_an_illegal_value_is_refused(profile_path) -> None:
     assert loaded.stale is True
 
 
+def test_the_camera_choice_survives_a_round_trip(profile_path) -> None:
+    assert save_profile(DEFAULTS, profile_path, camera_index=2) is None
+    assert load_profile(profile_path).camera_index == 2
+
+
+def test_never_choosing_a_camera_is_distinguishable_from_choosing_zero(profile_path) -> None:
+    """0 is also the built-in default, so None has to mean something different.
+
+    The UI needs to know whether a selection exists at all — otherwise a fresh profile is
+    indistinguishable from one where the user deliberately picked the first device.
+    """
+    save_profile(DEFAULTS, profile_path)
+    assert load_profile(profile_path).camera_index is None
+
+    save_profile(DEFAULTS, profile_path, camera_index=0)
+    assert load_profile(profile_path).camera_index == 0
+
+
+def test_the_camera_choice_outlives_a_model_change(profile_path) -> None:
+    """The settings are thrown away here and the camera index is not, deliberately.
+
+    Every threshold under `settings` is expressed in terms of how a particular MediaPipe model
+    places landmarks, which is exactly why a model change discards them. A capture device index is
+    not a measurement of anything — it is a fact about this machine — so losing it to a model
+    upgrade would be a decision nobody made and nothing in the UI could explain.
+    """
+    save_profile(merge(DEFAULTS, {"cursor": {"coverage": 0.9}}), profile_path, camera_index=3)
+    stored = json.loads(profile_path.read_text(encoding="utf-8"))
+    stored["modelVariant"] = "something-else"
+    profile_path.write_text(json.dumps(stored), encoding="utf-8")
+
+    loaded = load_profile(profile_path)
+
+    assert loaded.settings == DEFAULTS, "the thresholds must still be refused"
+    assert loaded.stale is True
+    assert loaded.camera_index == 3, "the camera choice is not a landmark measurement"
+
+
+def test_the_camera_choice_outlives_a_refused_setting(profile_path) -> None:
+    """Same reasoning one step further in: a bad threshold says nothing about the webcam."""
+    profile_path.write_text(
+        json.dumps(
+            {
+                "profileVersion": PROFILE_VERSION,
+                "modelVariant": MODEL_VARIANT,
+                "modelVersion": MODEL_VERSION,
+                "cameraIndex": 1,
+                "settings": {"cursor": {"coverage": 0.001}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    loaded = load_profile(profile_path)
+    assert loaded.stale is True
+    assert loaded.camera_index == 1
+
+
+def test_the_camera_choice_is_not_read_from_an_unknown_format(profile_path) -> None:
+    """Above the `profileVersion` check the file's shape itself is untrusted.
+
+    A field found at that key in a format this engine does not know is not evidence of anything —
+    it might mean something entirely different in the version that wrote it.
+    """
+    save_profile(DEFAULTS, profile_path, camera_index=4)
+    stored = json.loads(profile_path.read_text(encoding="utf-8"))
+    stored["profileVersion"] = PROFILE_VERSION - 1
+    profile_path.write_text(json.dumps(stored), encoding="utf-8")
+
+    assert load_profile(profile_path).camera_index is None
+
+
+@pytest.mark.parametrize("value", ["1", 1.5, -1, True, None, [1]])
+def test_a_hand_edited_camera_index_degrades_to_no_selection(profile_path, value) -> None:
+    """This file is documented as inspectable, so it gets hand-edited.
+
+    `True` is in the list on purpose: bool subclasses int, so a naive check reads it as camera 1.
+    """
+    save_profile(DEFAULTS, profile_path)
+    stored = json.loads(profile_path.read_text(encoding="utf-8"))
+    stored["cameraIndex"] = value
+    profile_path.write_text(json.dumps(stored), encoding="utf-8")
+
+    assert load_profile(profile_path).camera_index is None
+
+
 def test_the_stamp_is_written_from_the_running_model(profile_path) -> None:
     save_profile(DEFAULTS, profile_path)
     stored = json.loads(profile_path.read_text(encoding="utf-8"))

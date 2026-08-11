@@ -79,6 +79,41 @@ describe('parseServerMessage', () => {
     ).toBeNull()
   })
 
+  it('accepts a cameras message', () => {
+    const message = parseServerMessage(
+      JSON.stringify({
+        type: 'cameras',
+        scanning: false,
+        devices: [{ index: 1, name: 'Camera 1 (MSMF)', width: 1280, height: 720 }],
+        selected: 1,
+        reason: null,
+      }),
+    )
+
+    expect(message?.type).toBe('cameras')
+    expect(message).toMatchObject({ selected: 1, devices: [{ index: 1 }] })
+  })
+
+  it('accepts a cameras message with no devices', () => {
+    // Not an error state: probing opens hardware, so the engine never does it unasked and the
+    // list is legitimately empty until someone scans.
+    const message = parseServerMessage(
+      JSON.stringify({ type: 'cameras', scanning: false, devices: [], selected: null, reason: null }),
+    )
+
+    expect(message?.type).toBe('cameras')
+  })
+
+  it('rejects a cameras message whose devices are not a list', () => {
+    // Everything the picker renders is derived from this array; a non-array would reach `.map`.
+    expect(
+      parseServerMessage(JSON.stringify({ type: 'cameras', scanning: false, selected: 0 })),
+    ).toBeNull()
+    expect(
+      parseServerMessage(JSON.stringify({ type: 'cameras', devices: {}, selected: 0 })),
+    ).toBeNull()
+  })
+
   it('rejects an unknown message type', () => {
     expect(parseServerMessage(JSON.stringify({ type: 'set_settings' }))).toBeNull()
   })

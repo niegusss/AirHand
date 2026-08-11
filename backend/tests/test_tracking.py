@@ -18,7 +18,7 @@ import pytest
 
 from airhand.camera import CameraService, CameraUnavailable, discover_cameras
 from airhand.live import LiveSource
-from airhand.pipeline import Sample, SourceStatus, TelemetrySource
+from airhand.pipeline import CameraInfo, Sample, SourceStatus, TelemetrySource
 from airhand.protocol import landmark_count
 from airhand.telemetry import SyntheticSource
 from airhand.tracking import MODEL_VARIANT, TrackingEngine, model_path
@@ -155,6 +155,157 @@ def test_live_source_reports_error_state_when_camera_is_absent() -> None:
         assert source.latest() is None
     finally:
         source.stop()
+
+
+class _CountingSource(LiveSource):
+    """Counts how many times the pipeline thread actually ran."""
+
+    def __init__(self, **kwargs: object) -> None:
+        super().__init__(**kwargs)  # type: ignore[arg-type]
+        self.runs = 0
+
+    def _run(self) -> None:
+        self.runs += 1
+        super()._run()
+
+
+def test_start_works_again_after_the_camera_failed_to_open() -> None:
+    """A camera error must not make Start a permanent no-op.
+
+    `_run` returns early when `camera.open()` raises, and it has no opportunity to clear
+    `self._thread` on the way out — so a `start()` guarded on `self._thread is not None` sees a
+    thread that finished seconds ago and declines to do anything. The user unplugs and replugs the
+    webcam, presses Start, and nothing happens, with no message explaining why.
+
+    Reachable before camera selection existed (start the engine with the webcam unplugged) and
+    directly in its path afterwards: choose a device that cannot be opened, then choose a working
+    one and press Start.
+
+    Counts runs rather than watching the status, because both attempts end in the same `error`
+    state within milliseconds and the transition between them is not reliably observable.
+    """
+    source = _CountingSource(camera_index=99)
+    try:
+        source.start()
+        _wait_for_camera_error(source)
+        assert source.runs == 1
+
+        # No stop() in between — that is the whole point. stop() clears `_thread` and would hide
+        # the defect.
+        source.start()
+        _wait_for_camera_error(source)
+        assert source.runs == 2, "Start did nothing after the previous attempt failed"
+    finally:
+        source.stop()
+
+
+def _wait_for_camera_error(source: LiveSource, timeout: float = 5.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if source.status().camera == "error":
+            return
+        time.sleep(0.02)
+    pytest.fail("LiveSource never reported an error for a missing camera")
+
+
+# ------------------------------------------------------- switching the camera
+
+
+class _BlockingSource(LiveSource):
+    """A pipeline thread that stays alive without a camera behind it.
+
+    The absent-camera source dies within milliseconds, so it cannot answer any question about what
+    happens *while* the pipeline is running — which is the only interesting half of switching
+    devices.
+    """
+
+    def __init__(self, **kwargs: object) -> None:
+        super().__init__(**kwargs)  # type: ignore[arg-type]
+        self.runs = 0
+
+    def _run(self) -> None:
+        self.runs += 1
+        self._set_status(SourceStatus(camera="on", camera_name="blocking test source"))
+        self._stop_event.wait()
+
+
+def _wait_for(source: LiveSource, camera: str, timeout: float = 5.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if source.status().camera == camera:
+            return
+        time.sleep(0.02)
+    pytest.fail(f"source never reached camera state {camera!r}")
+
+
+def test_discovery_is_refused_while_the_pipeline_holds_a_camera() -> None:
+    """The refusal is the feature.
+
+    On Windows an open device cannot be opened a second time, so probing mid-capture returns a list
+    with the camera currently in use missing from it. That is worse than an error: a device that is
+    demonstrably working would appear not to exist, and nothing on screen could explain why.
+    """
+    source = _BlockingSource(camera_index=0)
+    source.start()
+    try:
+        _wait_for(source, "on")
+        with pytest.raises(RuntimeError, match="Stop the pipeline"):
+            source.discover()
+    finally:
+        source.stop()
+
+    # Stopped, the same call is allowed. Whether this machine has a webcam is not the question.
+    assert isinstance(source.discover(), list)
+
+
+def test_switching_the_camera_restarts_a_running_pipeline() -> None:
+    source = _BlockingSource(camera_index=0)
+    source.start()
+    try:
+        _wait_for(source, "on")
+        assert source.runs == 1
+
+        source.set_camera(3)
+        _wait_for(source, "on")
+
+        assert source.runs == 2, "the pipeline must reopen, not carry on with the old device"
+        assert source.camera_index == 3
+        assert source.status().camera_index == 3
+    finally:
+        source.stop()
+
+
+def test_switching_the_camera_while_stopped_does_not_start_it() -> None:
+    """A choice made with the pipeline down takes effect on the next start, not immediately.
+
+    Starting a camera because someone picked one in a list would open a device — and, with the
+    pipeline, arm everything downstream of it — from what is only a preference change.
+    """
+    source = _BlockingSource(camera_index=0)
+    source.set_camera(2)
+
+    assert source.runs == 0
+    assert source.status().camera == "off"
+    # The reported index still has to follow the choice, or the UI would show the old device
+    # immediately after being told the selection changed.
+    assert source.status().camera_index == 2
+
+
+def test_a_discovered_device_reports_only_what_a_choice_can_be_made_on() -> None:
+    """`fps` and `fourcc` are deliberately absent from the wire shape.
+
+    Discovery opens each device without requesting a format, so those two describe the driver's
+    idle default rather than anything the pipeline would get. Publishing them would invite a
+    choice made on a number that is not the answer.
+    """
+    info = CameraInfo(index=1, name="Camera 1 (MSMF)", width=1280, height=720, fps=30.0,
+                      fourcc="MJPG")
+    assert info.to_message() == {
+        "index": 1,
+        "name": "Camera 1 (MSMF)",
+        "width": 1280,
+        "height": 720,
+    }
 
 
 # ------------------------------------------------------------------ contract

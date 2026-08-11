@@ -23,7 +23,7 @@ from .calibration import CalibrationResult, CalibrationRunner, Observation
 from .cursor.engine import CursorState
 from .gestures import GestureDebug, GestureEngine, palm_center
 from .handmodel import FIST, POINTING, SCROLL_POSE, HandPose, make_hand
-from .pipeline import Sample, SourceStatus
+from .pipeline import CameraInfo, Sample, SourceStatus
 from .settings import DEFAULTS, EngineSettings
 
 # The synthetic frame is square, so no aspect correction is needed.
@@ -32,6 +32,11 @@ SYNTHETIC_ASPECT = 1.0
 # Reported to clients so they can shape the landmark overlay. Square, matching SYNTHETIC_ASPECT —
 # every source declares the geometry its landmarks are normalized against, this one included.
 SYNTHETIC_FRAME = 480
+
+# The one device this source claims. It exists so the camera picker has something to render against
+# `--source synthetic`, which is the mode the UI is developed in — a screen that can only be built
+# with a webcam attached is a screen that stops being worked on.
+SYNTHETIC_CAMERA_INDEX = 0
 
 _OPEN = 0.9
 _CLOSED = 0.15
@@ -129,12 +134,38 @@ class SyntheticSource:
         """
         return None
 
+    def discover(self) -> list[CameraInfo]:
+        """One pseudo-device, so the camera picker is testable without a webcam.
+
+        Not an empty list: `--source synthetic` is how the UI is developed, and a picker that can
+        only ever render "no cameras found" in that mode is a control nobody can look at while
+        building it. The name says plainly what it is, so nothing here can be mistaken for hardware.
+        """
+        return [
+            CameraInfo(
+                index=SYNTHETIC_CAMERA_INDEX,
+                name="Synthetic source",
+                width=SYNTHETIC_FRAME,
+                height=SYNTHETIC_FRAME,
+            )
+        ]
+
+    def set_camera(self, index: int) -> None:
+        """Accepted and ignored — there is one scripted stream and no device behind it.
+
+        Accepted rather than refused because the choice is still worth *persisting*: a user who
+        develops against the synthetic source and switches back to a camera should find their
+        device selection where they left it. The server owns that persistence; this source simply
+        has nothing to reopen.
+        """
+
     def status(self) -> SourceStatus:
         if self._started_at is None:
             return SourceStatus(camera="off", message="Synthetic source stopped")
         return SourceStatus(
             camera="on",
             camera_name="Synthetic source",
+            camera_index=SYNTHETIC_CAMERA_INDEX,
             message="Synthetic telemetry — no camera or MediaPipe in this mode",
             frame_width=SYNTHETIC_FRAME,
             frame_height=SYNTHETIC_FRAME,

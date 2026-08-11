@@ -1,9 +1,9 @@
 {
-  "version": "1.9.1",
+  "version": "1.10.0",
   "description": "AirHand Mouse engine <-> desktop UI WebSocket contract. Single source of truth for the protocol version — both the Python engine and the React client read this file so the version cannot drift.",
-  "serverToClient": ["hello", "status", "settings", "calibration", "telemetry", "error"],
+  "serverToClient": ["hello", "status", "settings", "calibration", "cameras", "telemetry", "error"],
   "serverToClientBinary": "preview-jpeg",
-  "clientToServer": ["auth", "command", "set_settings", "calibrate", "ping"],
+  "clientToServer": ["auth", "command", "set_settings", "calibrate", "select_camera", "ping"],
   "landmarkCount": 21,
   "previewMaxWidth": 320,
   "previewFps": 15

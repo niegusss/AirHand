@@ -17,6 +17,14 @@ interface TrackingSnapshot {
   camera: CameraState
   tracking: TrackingState
   cameraName: string | null
+  /**
+   * Which device the current status describes, null before one is open.
+   *
+   * **Not the same as `camerasStore.selected`**, which is what the engine opens *next*: a device
+   * chosen while the pipeline is stopped has not been opened yet, and after one fails to open the
+   * two disagree permanently until something succeeds. The picker renders both.
+   */
+  cameraIndex: number | null
   cpuPercent: number
   statusMessage: string | null
   /**
@@ -57,6 +65,7 @@ interface TrackingState_ extends TrackingSnapshot {
       | 'camera'
       | 'tracking'
       | 'cameraName'
+      | 'cameraIndex'
       | 'cpuPercent'
       | 'frameWidth'
       | 'frameHeight'
@@ -96,6 +105,7 @@ const INITIAL: TrackingSnapshot = {
   camera: 'off',
   tracking: 'idle',
   cameraName: null,
+  cameraIndex: null,
   cpuPercent: 0,
   statusMessage: null,
   frameWidth: null,

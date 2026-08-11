@@ -184,23 +184,39 @@ removes the handshake file, a hard kill does not.
 .\.venv\Scripts\python.exe -m pytest
 ```
 
-261 tests, no webcam required. They cover ephemeral port binding, atomic handshake writes, token
+293 tests, no webcam required. They cover ephemeral port binding, atomic handshake writes, token
 auth, protocol-version agreement, telemetry shape, `stop` halting the stream, duplicate-frame
 suppression, model presence, blank/noise frame handling, out-of-order timestamps, the
 missing-camera error path, gesture classification, hysteresis and dropout grace, cursor mapping and
 actuation safety, the pointer stage's anchor, hold and dropout rules, the settings channel's
-validation, persistence and flag precedence, the preview stream's opt-in, throttling and teardown,
-and the synthetic hand's own geometry — that a pose measures what it claims *and* could be made by
-a hand.
+validation, persistence and flag precedence, the camera channel's stop/reopen state machine and the
+survival of a device choice across everything that rewrites the profile, the preview stream's
+opt-in, throttling and teardown, and the synthetic hand's own geometry — that a pose measures what
+it claims *and* could be made by a hand.
 
 Detection *quality* is not covered — that needs a real hand in front of a real camera. What the
 suite proves is wiring, contracts and failure handling.
 
 ## Cameras
 
-OpenCV has no device-list API, so `discover_cameras()` probes indices. Device **names** are not
+OpenCV has no device-list API, so `discover_cameras()` probes indices 0–4. Device **names** are not
 available on Windows without a DirectShow enumeration dependency, so cameras are reported by
-index — worth revisiting if you end up with several and cannot tell them apart.
+index and backend — worth revisiting if you end up with several and cannot tell them apart.
+
+**A probe needs the device released.** On Windows an open camera cannot be opened a second time, so
+scanning while the pipeline runs would return a list with the camera in use missing from it. The
+`discover_cameras` command therefore stops the pipeline, probes, and starts it again — reporting
+`tracking: "idle"` for the duration so a client watching for a stalled stream does not report a
+broken pipeline in the middle of a healthy scan. Measured at **~3.1 s** on the dev machine, most of
+it spent failing to open the four indices that hold nothing.
+
+`--camera-index` overrides the device saved in `profile.json` for one run, the same precedence the
+tuning flags follow. Without it the engine opens whatever was last chosen in the app, or 0.
+
+A device that cannot be opened is **not** rolled back to the previous one — the failure surfaces as
+`camera: "error"` with a readable message. Pick a working device and press Start; the engine will
+reopen. (Before 2026-08-11 it would not: `start()` guarded on a thread reference that a failed
+camera left behind, so Start was a permanent no-op after any camera error.)
 
 If OpenCV logs *"backend is generally available but can't be used to capture by index"*, the
 webcam is almost certainly unplugged rather than the backend being broken. Check with:

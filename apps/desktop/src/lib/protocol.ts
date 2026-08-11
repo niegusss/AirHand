@@ -35,6 +35,15 @@ export interface StatusMessage {
   camera: CameraState
   tracking: TrackingState
   cameraName: string | null
+  /**
+   * Which device this status describes. Added in protocol 1.10.0, null for a source with no notion
+   * of a device index.
+   *
+   * `cameraName` embeds the index in a display string, and matching a device against the
+   * discovered list by parsing that string would be exactly the second copy this protocol keeps
+   * removing.
+   */
+  cameraIndex?: number | null
   cpuPercent: number
   message: string | null
   /**
@@ -211,6 +220,51 @@ export interface ProfileInfo {
   savedAt: string | null
 }
 
+/**
+ * One capture device. Added in protocol 1.10.0.
+ *
+ * Identified by index and backend rather than by a friendly name: OpenCV cannot supply one on
+ * Windows without a DirectShow enumeration dependency, and this app ships offline with no optional
+ * extras. `fps` and `fourcc` are deliberately not on the wire — discovery opens each device without
+ * requesting a format, so they would describe the driver's idle default rather than anything the
+ * pipeline would get.
+ */
+export interface CameraDevice {
+  index: number
+  name: string
+  width: number
+  height: number
+}
+
+/**
+ * The device list and the current selection. Added in protocol 1.10.0.
+ *
+ * Broadcast like `settings` and `calibration`, because a scan restarts the pipeline and every
+ * window has to learn about it.
+ */
+export interface CamerasMessage {
+  type: 'cameras'
+  /** A probe is in flight. The pipeline is down for its duration. */
+  scanning: boolean
+  /**
+   * Empty until someone scans, which is not an error. Probing opens and releases each device in
+   * turn, so it is never done on connect — reconnects happen on their own and would otherwise
+   * blink the camera for reasons the user never triggered.
+   */
+  devices: CameraDevice[]
+  /**
+   * What the engine will open **next**, which is not always what it has open now — a device chosen
+   * while the pipeline is stopped takes effect on the next start. `status.cameraIndex` answers the
+   * other question.
+   *
+   * Null when the user has never chosen one. The engine's default is also index 0, so null and 0
+   * have to stay distinguishable.
+   */
+  selected: number | null
+  /** Why a scan or a selection could not be honoured, meant to be shown. */
+  reason: string | null
+}
+
 export type CalibrationStep = 'neutral' | 'reach' | 'pinch'
 export type CalibrationState = 'sampling' | 'done' | 'failed'
 
@@ -292,6 +346,7 @@ export type ServerMessage =
   | StatusMessage
   | SettingsMessage
   | CalibrationMessage
+  | CamerasMessage
   | TelemetryMessage
   | ErrorMessage
   | PongMessage
@@ -310,6 +365,13 @@ export type CommandAction =
    */
   | 'enable_preview'
   | 'disable_preview'
+  /**
+   * Scan for capture devices, added in protocol 1.10.0.
+   *
+   * The one command that takes the pipeline down and puts it back: an open device cannot be
+   * enumerated on Windows, so a probe that ran mid-capture would omit the camera in use.
+   */
+  | 'discover_cameras'
 
 export type ClientMessage =
   | { type: 'auth'; token: string }
@@ -332,6 +394,13 @@ export type ClientMessage =
    */
   | { type: 'calibrate'; action: 'start'; step: CalibrationStep }
   | { type: 'calibrate'; action: 'cancel' | 'complete' }
+  /**
+   * Choose a capture device. Added in protocol 1.10.0.
+   *
+   * Its own message type rather than a `command` payload, for the same reason as `set_settings`:
+   * it carries data, and commands are argument-free verbs.
+   */
+  | { type: 'select_camera'; index: number }
   | { type: 'ping'; ts: number }
 
 /**
@@ -386,6 +455,10 @@ export function parseServerMessage(raw: unknown): ServerMessage | null {
       return typeof message.step === 'string' && typeof message.state === 'string'
         ? (message as unknown as CalibrationMessage)
         : null
+    case 'cameras':
+      // The list is what everything else on the screen is derived from, and an empty one is a
+      // legitimate state — so its presence and type are the check, not its length.
+      return Array.isArray(message.devices) ? (message as unknown as CamerasMessage) : null
     case 'telemetry':
       return typeof message.fps === 'number' && typeof message.gesture === 'string'
         ? (message as unknown as TelemetryMessage)

@@ -44,8 +44,8 @@ this server drives real OS input.
 
 ### `hello`
 ```jsonc
-{ "type": "hello", "protocolVersion": "1.7.0", "engineVersion": "0.1.0",
-  "capabilities": ["telemetry", "preview", "settings"] }
+{ "type": "hello", "protocolVersion": "1.10.0", "engineVersion": "0.2.0",
+  "capabilities": ["telemetry", "preview", "settings", "calibration", "cameras"] }
 ```
 
 ### `status`
@@ -56,6 +56,7 @@ Low frequency — sent on change only.
   "camera": "off" | "starting" | "on" | "error",
   "tracking": "idle" | "running" | "paused",
   "cameraName": "string | null",
+  "cameraIndex": 0,               // 1.10.0 — which device, null if the source has no notion of one
   "cpuPercent": 0.0,
   "message": "string | null",
 
@@ -173,6 +174,43 @@ bounds the threshold — it is the nearest pose to a pinch that is not one — s
 without it lands above the closed hand and turns making a fist into a click. Null on every other
 step.
 
+### `cameras`
+Added in 1.10.0. Sent after `settings` on connect, and broadcast on every scan and every
+selection.
+
+```jsonc
+{
+  "type": "cameras",
+  "scanning": false,               // a probe is in flight
+  "devices": [
+    { "index": 0, "name": "Camera 0 (MSMF)", "width": 640, "height": 480 }
+  ],
+  "selected": 0,                   // what the engine opens next; null if never chosen
+  "reason": null                   // why a scan or a selection could not be honoured
+}
+```
+
+**`devices` is empty until someone scans**, and that is not an error. Probing opens and releases
+each device in turn, so it is not something to do on connect — a reconnect happens on its own
+(backoff, a reload, the shell restarting the engine) and would otherwise blink the camera for
+reasons the user never triggered.
+
+**`selected` is what the engine will open next, which is not always what it has open now.** A
+device chosen while the pipeline is stopped takes effect on the next start. `status.cameraIndex`
+answers the other question — which device the current status describes.
+
+**`selected` is null when the user has never chosen one.** The built-in default is also index 0,
+so null and 0 have to stay distinguishable or the UI cannot tell a fresh profile from a deliberate
+choice of the first device.
+
+**Devices are identified by index and backend, not by name.** OpenCV cannot supply a friendly
+device name on Windows without a DirectShow enumeration dependency, and this application ships
+offline with no optional extras.
+
+**`fps` and `fourcc` are deliberately not published.** Discovery opens each device without
+requesting a format, so those values describe the driver's idle default rather than anything the
+pipeline would get — publishing them would invite a choice made on a number that is not the answer.
+
 ### `telemetry`
 High frequency (~60 Hz). The client must throttle rendering — never render once per message.
 
@@ -274,11 +312,24 @@ background only.
 { "type": "command",
   "action": "start" | "stop" | "pause"
           | "enable_cursor" | "disable_cursor"
-          | "enable_preview" | "disable_preview" }
+          | "enable_preview" | "disable_preview"
+          | "discover_cameras" }
 ```
 
 Commands are argument-free verbs. Anything carrying data gets its own message type — see
-`set_settings`.
+`set_settings` and `select_camera`.
+
+`discover_cameras` was added in 1.10.0 and is the one command that **takes the pipeline down and
+puts it back**. On Windows an open device cannot be opened a second time, so a probe that ran
+mid-capture would return a list with the camera currently in use missing from it — a working
+device appearing not to exist, with nothing on screen able to explain it.
+
+For the duration, `tracking` is reported as `idle`. That is not cosmetic: a client watching for a
+stalled stream would otherwise report a broken pipeline a few hundred milliseconds into a healthy
+scan. The pipeline is restored to whatever state the scan found it in, including when the probe
+raises — a diagnostic action must not be the thing that costs the user their camera.
+
+A second scan while one is running is refused with an `error` rather than queued.
 
 `enable_preview` / `disable_preview` were added in 1.4.0 and control the binary preview stream.
 Subscription is per connection and is dropped automatically on disconnect. Neither command
@@ -324,6 +375,36 @@ shutdown and the profile has to survive one.
 A write that fails does not undo the change: it is already live, and the reason travels to the UI
 in `profile.reason` instead.
 
+### `select_camera`
+Added in 1.10.0. Choose a capture device.
+
+```jsonc
+{ "type": "select_camera", "index": 1 }
+```
+
+Its own message type rather than a `command`, for the same reason as `set_settings`: it carries
+data, and commands are argument-free verbs.
+
+**A running pipeline reopens on the new device; a stopped one takes the change on its next start.**
+Nothing else changes — in particular cursor actuation ends up **off**, because reopening goes
+through the ordinary stop, and actuation is requested per session and never restored automatically.
+
+**A device that cannot be opened is not rolled back.** The failure surfaces as the ordinary
+`camera: "error"` status with a readable message; quietly running a camera the user did not choose
+would be the invisible kind of wrong this protocol avoids elsewhere. The UI stays usable
+throughout, because it is driven by this socket and not by the camera.
+
+**Re-selecting the current device is not a no-op.** After a camera fails to open, picking it again
+is how a user asks for another attempt, and short-circuiting on equality would turn the one obvious
+recovery action into a button that does nothing.
+
+The choice is persisted to `profile.json` as a top-level `cameraIndex`, **beside `settings` rather
+than inside it**. Everything under `settings` is expressed in terms of how a particular MediaPipe
+model places landmarks, which is why a model change discards it wholesale; a capture device index
+is a fact about the machine and survives that.
+
+An index that is not a non-negative integer is refused with `invalid_settings`.
+
 ### `calibrate`
 Added in 1.7.0. Drives the Calibration wizard.
 
@@ -368,6 +449,7 @@ The client compares major versions and refuses on mismatch.
 
 | Version | Change |
 |---|---|
+| 1.10.0 | Added the camera channel: the `cameras` message, the `discover_cameras` command, the `select_camera` message, `status.cameraIndex`, the `cameras` capability and a top-level `cameraIndex` in `profile.json`. Additive — a 1.9.x client ignores the message and never selects a device. |
 | 1.9.0 | Added `profile.savedAt` to `settings` — when the profile was last written, ISO 8601 with a UTC offset, or null for one written before the field existed. Additive. |
 | 1.8.0 | Added `phase` to `calibration`, splitting the `pinch` step into a pinch phase and a fist phase, and `fistFloor` to its `measurement`. The step's `secondsTotal` grew 8 s → 12 s. Additive — a 1.7.x client ignores `phase` and shows one prompt for the whole step. |
 | 1.7.0 | Added the calibration channel: the `calibration` message, the `calibrate` command, `cursor.centerX` / `centerY`, `settings.activeArea` and `profile.calibrated`. Additive — a 1.6.x client ignores the new message and never sends a `calibrate`. |

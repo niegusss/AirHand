@@ -28,6 +28,11 @@ from .settings import DEFAULTS, EngineSettings, InvalidSettings, merge
 
 log = logging.getLogger("airhand")
 
+# Which device to open when nothing else says otherwise. Not in `settings.py`: that module defines
+# knobs with continuous ranges, and a capture device is a discrete choice from a list that changes
+# while the engine runs.
+DEFAULT_CAMERA_INDEX = 0
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -43,7 +48,17 @@ def build_parser() -> argparse.ArgumentParser:
             "stream so UI work does not need a webcam attached."
         ),
     )
-    parser.add_argument("--camera-index", type=int, default=0, help="Camera index to open.")
+    # Default None, not 0, so "was it passed?" is answerable — 0 is also the built-in default, and
+    # the two have to stay distinguishable for the flag to be able to beat a saved choice.
+    parser.add_argument(
+        "--camera-index",
+        type=int,
+        default=None,
+        help=(
+            "Camera index to open. Overrides the saved profile for this run. "
+            f"Default: the device chosen in the app, or {DEFAULT_CAMERA_INDEX}."
+        ),
+    )
     parser.add_argument("--camera-width", type=int, default=640, help="Requested frame width.")
     parser.add_argument("--camera-height", type=int, default=480, help="Requested frame height.")
     parser.add_argument(
@@ -240,7 +255,23 @@ def _resolve_settings(args: argparse.Namespace) -> tuple[EngineSettings, LoadedP
     return settings, profile
 
 
-def _build_source(args: argparse.Namespace, settings: EngineSettings) -> TelemetrySource:
+def _resolve_camera_index(args: argparse.Namespace, profile: LoadedProfile | None) -> int:
+    """Explicit flag > saved profile > built-in default.
+
+    The same precedence the tuning flags follow, and it exists for the same reason: a flag that
+    silently does nothing because a profile happens to hold a value is an hour of debugging
+    waiting to happen.
+    """
+    if args.camera_index is not None:
+        return args.camera_index
+    if profile is not None and profile.camera_index is not None:
+        return profile.camera_index
+    return DEFAULT_CAMERA_INDEX
+
+
+def _build_source(
+    args: argparse.Namespace, settings: EngineSettings, camera_index: int
+) -> TelemetrySource:
     if args.source == "synthetic":
         from .telemetry import SyntheticSource
 
@@ -250,7 +281,7 @@ def _build_source(args: argparse.Namespace, settings: EngineSettings) -> Telemet
     from .live import LiveSource
 
     return LiveSource(
-        camera_index=args.camera_index,
+        camera_index=camera_index,
         width=args.camera_width,
         height=args.camera_height,
         camera_fps=args.camera_fps,
@@ -295,7 +326,8 @@ async def run(args: argparse.Namespace) -> int:
         log.error("Refusing to start: %s", exc)
         return 2
 
-    source = _build_source(args, settings)
+    camera_index = _resolve_camera_index(args, profile)
+    source = _build_source(args, settings, camera_index)
     source.start()
 
     server = EngineServer(
@@ -306,6 +338,12 @@ async def run(args: argparse.Namespace) -> int:
         target_fps=args.fps,
         settings=settings,
         profile=profile,
+        # What the server must write back on every save. Passed rather than read off the source:
+        # only an *explicit* choice belongs in the profile, and the source cannot tell one from
+        # the fallback it was constructed with.
+        camera_index=args.camera_index if args.camera_index is not None else (
+            profile.camera_index if profile else None
+        ),
     )
     await server.start()
     port = server.port
@@ -320,6 +358,8 @@ async def run(args: argparse.Namespace) -> int:
     log.info("AirHand engine v%s", protocol.ENGINE_VERSION)
     log.info("Protocol v%s", protocol.protocol_version())
     log.info("Source: %s", args.source)
+    if args.source == "camera":
+        log.info("Camera index: %d", camera_index)
     log.info("Listening on ws://%s:%d", args.host, port)
     log.info("Handshake: %s", handshake_path)
     if profile is None:

@@ -31,6 +31,7 @@ import {
 import { clearPreview, pushPreviewFrame } from './previewBuffer'
 import { clearTelemetry, pushTelemetry } from './telemetryBuffer'
 import { useCalibrationStore } from '@/stores/calibrationStore'
+import { useCamerasStore } from '@/stores/camerasStore'
 import { useConnectionStore } from '@/stores/connectionStore'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { useTrackingStore } from '@/stores/trackingStore'
@@ -65,6 +66,7 @@ export class EngineClient {
     useTrackingStore.getState().clearStream()
     useSettingsStore.getState().reset()
     useCalibrationStore.getState().reset()
+    useCamerasStore.getState().reset()
     useConnectionStore.getState().setPhase('disconnected')
   }
 
@@ -170,6 +172,9 @@ export class EngineClient {
       // A measurement cannot outlive the connection that was feeding it — the countdown would
       // freeze mid-step and the wizard would wait for a verdict that is never coming.
       useCalibrationStore.getState().reset()
+      // Devices belong to the engine that enumerated them, and `scanning` would otherwise be stuck
+      // true forever if the connection dropped mid-probe.
+      useCamerasStore.getState().reset()
       if (this.closedByUser) return
       useConnectionStore.getState().setPhase('reconnecting')
       this.scheduleRetry(generation)
@@ -227,6 +232,8 @@ export class EngineClient {
           camera: message.camera,
           tracking: message.tracking,
           cameraName: message.cameraName,
+          // Optional since protocol 1.10.0; a 1.9.x engine simply never names a device index.
+          cameraIndex: message.cameraIndex ?? null,
           cpuPercent: message.cpuPercent,
           statusMessage: message.message,
           // Optional since protocol 1.5.0; a 1.4.x engine leaves the overlay to fall back.
@@ -252,6 +259,12 @@ export class EngineClient {
       // `settings`: two windows must not disagree about where the wizard is.
       case 'calibration':
         useCalibrationStore.getState().applyCalibration(message)
+        break
+
+      // Protocol 1.10.0. Broadcast for the same reason again — a scan restarts the pipeline, so
+      // every window has to learn that the device list and the selection moved.
+      case 'cameras':
+        useCamerasStore.getState().applyCameras(message)
         break
 
       case 'telemetry':

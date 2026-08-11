@@ -83,6 +83,17 @@ class LoadedProfile:
     change?" — has to survive all three.
     """
     saved_at: str | None = None
+    """Which capture device the user chose, or None if they never have.
+
+    **Read even from a profile whose settings were refused.** Every threshold in `settings` is
+    expressed in terms of the landmark placement of a particular MediaPipe model, which is why a
+    model change throws them away — but a camera index is not a measurement of anything. It is a
+    fact about this machine, and losing it to a model upgrade would be a decision nobody made.
+
+    None rather than 0 for "never chosen": the engine's built-in default is also 0, and the two
+    have to stay distinguishable or the UI cannot say whether a selection exists.
+    """
+    camera_index: int | None = None
 
     def to_message(self) -> dict[str, Any]:
         return {
@@ -121,6 +132,15 @@ def load_profile(path: Path | None = None) -> LoadedProfile:
             ),
         )
 
+    # Read before the staleness checks and carried through every return below them. The checks that
+    # follow reject *settings* — thresholds expressed in terms of a model's landmark placement — and
+    # a capture device is not one of those. Throwing away which webcam the user picked because
+    # MediaPipe shipped a new model would be a decision nobody made and nothing would explain.
+    #
+    # It is deliberately *not* read above the `profileVersion` check: there the file's shape itself
+    # is untrusted, so a field found at that key means nothing.
+    camera_index = _stored_camera_index(stored)
+
     variant = stored.get("modelVariant")
     version = stored.get("modelVersion")
     if variant != MODEL_VARIANT or version != MODEL_VERSION:
@@ -129,6 +149,7 @@ def load_profile(path: Path | None = None) -> LoadedProfile:
             resolved,
             loaded=False,
             stale=True,
+            camera_index=camera_index,
             reason=(
                 f"Profile was calibrated against model {variant} {version}, this engine runs "
                 f"{MODEL_VARIANT} {MODEL_VERSION}. Thresholds are expressed in terms of landmark "
@@ -142,7 +163,7 @@ def load_profile(path: Path | None = None) -> LoadedProfile:
     except InvalidSettings as exc:
         # A hand-edited or downgraded profile. Same treatment as a corrupt one.
         return LoadedProfile(
-            DEFAULTS, resolved, loaded=False, stale=True,
+            DEFAULTS, resolved, loaded=False, stale=True, camera_index=camera_index,
             reason=f"Profile contains a value this engine will not accept: {exc}",
         )
 
@@ -152,11 +173,25 @@ def load_profile(path: Path | None = None) -> LoadedProfile:
         settings,
         resolved,
         loaded=True,
+        camera_index=camera_index,
         calibrated=bool(stored.get("calibrated", False)),
         # Read back as whatever is there. Profiles written before this field existed simply have
         # none, and that is a true statement about them — inventing a date would not be.
         saved_at=saved_at if isinstance(saved_at, str) else None,
     )
+
+
+def _stored_camera_index(stored: dict[str, Any]) -> int | None:
+    """The saved device index, or None if there is not a usable one.
+
+    Hand-editing this file is documented as supported, so a string, a float or a negative number
+    has to degrade to "no selection" rather than reach the source. `bool` is excluded explicitly
+    because it is a subclass of `int` and `True` would otherwise be read as camera 1.
+    """
+    value = stored.get("cameraIndex")
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
 
 
 def save_profile(
@@ -165,6 +200,7 @@ def save_profile(
     *,
     calibrated: bool = False,
     saved_at: str | None = None,
+    camera_index: int | None = None,
 ) -> str | None:
     """Persist the settings. Returns None on success, or a human-readable reason on failure.
 
@@ -177,6 +213,10 @@ def save_profile(
     caller is the only thing that knows whether the wizard has been completed this session, and a
     read-modify-write here would silently resurrect the flag from a profile the engine had already
     refused as stale.
+
+    **`camera_index` follows the same rule, and for a sharper reason.** Every write is a full
+    rewrite, so a caller that forgets to pass it erases the user's device choice — and it would
+    happen on the next slider nudge, nowhere near anything to do with cameras.
     """
     resolved = path or default_profile_path()
     payload = {
@@ -184,6 +224,10 @@ def save_profile(
         "modelVariant": MODEL_VARIANT,
         "modelVersion": MODEL_VERSION,
         "calibrated": calibrated,
+        # Beside `settings`, not inside it. The sections under `settings` are validated against
+        # `KNOBS` and are discarded wholesale when the model changes; a device index belongs to
+        # neither of those rules.
+        "cameraIndex": camera_index,
         # Local time *with its offset*, not a bare local timestamp and not bare UTC. The offset
         # keeps it unambiguous, and local time is what the user recognises — this file is theirs,
         # read on the machine that wrote it, and "16:32+02:00" answers "was that before or after I

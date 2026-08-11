@@ -18,7 +18,7 @@ from websockets.exceptions import ConnectionClosed
 from .. import protocol
 from ..calibration import CalibrationResult
 from ..cursor.mapping import active_area_for
-from ..pipeline import SourceStatus, TelemetrySource
+from ..pipeline import MAX_CAMERA_PROBE_INDEX, SourceStatus, TelemetrySource
 from ..profile import LoadedProfile, now_stamp, save_profile
 from ..settings import DEFAULTS, EngineSettings, InvalidSettings, merge, settings_message
 
@@ -48,6 +48,7 @@ class EngineServer:
         target_fps: float = 60.0,
         settings: EngineSettings | None = None,
         profile: LoadedProfile | None = None,
+        camera_index: int | None = None,
     ) -> None:
         self._source = source
         self._token = token
@@ -88,6 +89,21 @@ class EngineServer:
         self._last_preview_index = -1
         self._last_calibration: CalibrationResult | None = None
         self._last_area: dict[str, float] | None = None
+        # The user's *explicit* device choice, or None if they have never made one. Held here for
+        # the same reason as `_calibrated`: every write to the profile is a full rewrite, so a value
+        # that is not carried on each `_persist` is erased by the next unrelated settings change.
+        #
+        # Deliberately not read back off the source, which cannot distinguish a chosen index from
+        # the fallback it happened to be constructed with.
+        self._camera_index = camera_index
+        # Last scan's result. Empty until someone asks — probing opens devices, so it is not
+        # something to do on connect.
+        self._devices: list[dict[str, Any]] = []
+        self._scanning = False
+        self._scan_reason: str | None = None
+        # A scan stops and restarts the pipeline. Two of them interleaving would have one restart
+        # the camera while the other was still probing it.
+        self._scan_lock = asyncio.Lock()
 
     @property
     def port(self) -> int:
@@ -140,6 +156,10 @@ class EngineServer:
             self._clients.add(connection)
             await self._send(connection, self._status_message())
             await self._send(connection, self._settings_message())
+            # Sent unasked so a reconnecting client knows which device is selected without
+            # triggering a scan — a scan opens hardware, and reconnects happen on their own.
+            # The device *list* is whatever the last scan found, legitimately empty at first.
+            await self._send(connection, self._cameras_message())
             await self._receive_loop(connection)
         except ConnectionClosed:
             pass
@@ -196,6 +216,8 @@ class EngineServer:
                 await self._handle_command(connection, str(message.get("action", "")))
             elif kind == "set_settings":
                 await self._handle_set_settings(connection, message)
+            elif kind == "select_camera":
+                await self._handle_select_camera(connection, message)
             elif kind == "calibrate":
                 await self._handle_calibrate(connection, message)
             else:
@@ -242,6 +264,9 @@ class EngineServer:
             self._preview_clients.discard(connection)
             self._sync_preview_subscription()
             return
+        elif action == "discover_cameras":
+            await self._handle_discover(connection)
+            return  # It broadcasts its own status and cameras messages, in order.
         else:
             await self._send(connection, protocol.error("internal", f"Unknown action: {action!r}"))
             return
@@ -274,6 +299,100 @@ class EngineServer:
         log.info("Settings updated by client")
         await self._broadcast(self._settings_message())
 
+    async def _handle_discover(self, connection: ServerConnection) -> None:
+        """Scan for capture devices, stopping and resuming the pipeline around the probe.
+
+        The pipeline has to come down first: on Windows an open device cannot be opened a second
+        time, so probing mid-capture returns a list with the camera currently in use missing from
+        it — a device that is plainly working appearing not to exist, with nothing on screen able
+        to explain it.
+
+        **`tracking` is reported as `idle` for the duration.** Leaving it at `running` over a
+        released camera would be a lie the UI acts on: the client's own stall detection would fire
+        a few hundred milliseconds in and report a broken pipeline in the middle of a healthy scan.
+        """
+        if self._scan_lock.locked():
+            await self._send(
+                connection, protocol.error("internal", "A camera scan is already running.")
+            )
+            return
+
+        async with self._scan_lock:
+            was_running = self._tracking == "running"
+            self._scanning = True
+            self._scan_reason = None
+            await self._broadcast(self._cameras_message())
+
+            if was_running:
+                await asyncio.to_thread(self._source.stop)
+                self._tracking = "idle"
+                await self._broadcast(self._status_message())
+
+            try:
+                devices = await asyncio.to_thread(self._source.discover)
+                self._devices = [device.to_message() for device in devices]
+                self._scan_reason = None if devices else (
+                    "No cameras found. Indices are probed from 0 to "
+                    f"{MAX_CAMERA_PROBE_INDEX - 1}, so a device numbered above that is not seen — "
+                    "and a webcam held by another application cannot be opened here either."
+                )
+            except Exception as exc:  # noqa: BLE001 - a failed scan must not drop the client
+                log.exception("Camera scan failed")
+                self._devices = []
+                self._scan_reason = f"The camera scan failed: {exc}"
+            finally:
+                self._scanning = False
+                # In `finally` on purpose. A scan that raised must still give the user back the
+                # pipeline it took away — otherwise one bad probe leaves a working camera dark.
+                if was_running:
+                    await asyncio.to_thread(self._source.start)
+                    self._tracking = "running"
+                    await self._broadcast(self._status_message())
+
+        log.info("Camera scan found %d device(s)", len(self._devices))
+        await self._broadcast(self._cameras_message())
+
+    async def _handle_select_camera(
+        self, connection: ServerConnection, message: dict[str, Any]
+    ) -> None:
+        """Choose a capture device, and remember the choice.
+
+        **Re-selecting the current device is not a no-op.** After a camera fails to open, picking
+        it again is the natural way to ask for another attempt, and short-circuiting on equality
+        would turn the one obvious recovery action into a button that does nothing.
+        """
+        index = message.get("index")
+        # `bool` before `int`: True is an instance of int and would otherwise select camera 1.
+        if isinstance(index, bool) or not isinstance(index, int) or index < 0:
+            await self._send(
+                connection,
+                protocol.error(
+                    "invalid_settings",
+                    f"Camera index must be a non-negative integer, got {index!r}.",
+                ),
+            )
+            return
+
+        self._camera_index = index
+        # The source decides whether this restarts anything: running means reopen, stopped means
+        # take effect on the next start. A device that cannot be opened surfaces through the
+        # ordinary `camera: "error"` status rather than being rolled back to the previous one —
+        # silently running a camera the user did not choose is the invisible kind of wrong.
+        await asyncio.to_thread(self._source.set_camera, index)
+        await self._persist()
+
+        log.info("Camera index -> %d", index)
+        await self._broadcast(self._cameras_message())
+        await self._broadcast(self._status_message())
+
+    def _cameras_message(self) -> dict[str, Any]:
+        return protocol.cameras(
+            devices=self._devices,
+            selected=self._camera_index,
+            scanning=self._scanning,
+            reason=self._scan_reason,
+        )
+
     async def _persist(self) -> None:
         """Write the profile, if there is one to write.
 
@@ -293,6 +412,10 @@ class EngineServer:
             self._profile.path,
             calibrated=self._calibrated,
             saved_at=stamp,
+            # Carried on every write, exactly like `calibrated`. A save is a full rewrite, so
+            # omitting it here would erase the user's camera choice on the next slider nudge —
+            # nowhere near anything to do with cameras, and impossible to connect to a cause.
+            camera_index=self._camera_index,
         )
         self._saved = True
         if self._profile_reason is None:
@@ -518,6 +641,7 @@ class EngineServer:
             camera=resolved.camera,
             tracking=self._tracking,
             camera_name=resolved.camera_name,
+            camera_index=resolved.camera_index,
             message=resolved.message,
             frame_width=resolved.frame_width,
             frame_height=resolved.frame_height,

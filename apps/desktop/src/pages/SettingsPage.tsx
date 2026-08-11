@@ -2,12 +2,14 @@ import { Settings as SettingsIcon } from 'lucide-react'
 
 import { CameraPreview } from '@/components/CameraPreview'
 import { ActiveAreaOverlay } from '@/components/calibration/ActiveAreaOverlay'
+import { CameraPicker } from '@/components/settings/CameraPicker'
 import { PinchThresholds } from '@/components/settings/PinchThresholds'
 import { ProfileCard } from '@/components/settings/ProfileCard'
 import { SettingsSection } from '@/components/settings/SettingsSection'
 import { useEngineCommands } from '@/hooks/useEngine'
 import { useNow } from '@/hooks/useNow'
 import { SETTINGS_GROUPS } from '@/lib/settings'
+import { useCamerasStore } from '@/stores/camerasStore'
 import { useConnectionStore } from '@/stores/connectionStore'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { pipelineIssue, useTrackingStore } from '@/stores/trackingStore'
@@ -45,7 +47,14 @@ export function SettingsPage() {
   const profile = useSettingsStore((state) => state.profile)
   const rejection = useSettingsStore((state) => state.lastRejection)
 
+  const devices = useCamerasStore((state) => state.devices)
+  const selectedCamera = useCamerasStore((state) => state.selected)
+  const scanning = useCamerasStore((state) => state.scanning)
+  const scanned = useCamerasStore((state) => state.scanned)
+  const cameraReason = useCamerasStore((state) => state.reason)
+
   const camera = useTrackingStore((state) => state.camera)
+  const cameraIndex = useTrackingStore((state) => state.cameraIndex)
   const tracking = useTrackingStore((state) => state.tracking)
   const handDetected = useTrackingStore((state) => state.handDetected)
   const lastSampleAt = useTrackingStore((state) => state.lastSampleAt)
@@ -85,6 +94,22 @@ export function SettingsPage() {
         </p>
       ) : (
         <div className="grid items-start gap-4 lg:grid-cols-2">
+          {/* First, and outside `SETTINGS_GROUPS`: which camera is not a knob. The engine's knobs
+              are continuous ranges with bounds on the wire, and a device is a discrete choice from
+              a list that changes while the engine runs. Keeping it out is also what keeps
+              `lib/settings.test.ts` — every knob must have a control — meaningful. */}
+          <CameraPicker
+            devices={devices}
+            selected={selectedCamera}
+            active={cameraIndex}
+            scanning={scanning}
+            scanned={scanned}
+            reason={cameraReason}
+            disabled={!connected}
+            onScan={commands.discoverCameras}
+            onSelect={commands.selectCamera}
+          />
+
           {SETTINGS_GROUPS.map((group) => (
             <div key={group.title} className="flex flex-col gap-4">
               <SettingsSection

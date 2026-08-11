@@ -10,28 +10,21 @@ from __future__ import annotations
 
 import logging
 import sys
-from dataclasses import dataclass
 from typing import Iterator
 
 import cv2
 import numpy as np
 
+# Defined in `pipeline` rather than here: this module imports OpenCV, and the synthetic source has
+# to describe a device on a machine with no CV stack installed. Re-exported so
+# `from airhand.camera import CameraInfo` keeps working.
+from ..pipeline import MAX_CAMERA_PROBE_INDEX, CameraInfo
+
 log = logging.getLogger(__name__)
 
-# Probing is the only portable way to enumerate with OpenCV — there is no device-list API.
-# Each miss costs a backend open attempt, so keep the ceiling low.
-MAX_PROBE_INDEX = 5
-
-
-@dataclass(frozen=True)
-class CameraInfo:
-    index: int
-    name: str
-    width: int
-    height: int
-    """What the driver actually granted — requests are advisory and often silently ignored."""
-    fps: float = 0.0
-    fourcc: str = ""
+# Re-exported under the name this module has always used. The value lives in `pipeline` so the
+# WebSocket server can name the limit in a "no cameras found" message without importing OpenCV.
+MAX_PROBE_INDEX = MAX_CAMERA_PROBE_INDEX
 
 
 BACKEND_ALIASES: dict[str, int] = {
@@ -59,11 +52,23 @@ def _preferred_backends() -> list[int]:
 
 
 def discover_cameras(max_index: int = MAX_PROBE_INDEX) -> list[CameraInfo]:
-    """Probe indices until a gap, returning every device that yields a real frame.
+    """Probe every index below `max_index`, returning each device that yields a real frame.
+
+    **Every index, not "until a gap".** An earlier docstring here claimed the loop stopped at the
+    first miss, which it never did — and stopping would be wrong: an index can be absent while a
+    higher one works, most obviously after a webcam is unplugged and a virtual camera is not.
+    The cost of getting it wrong is a device the user owns being invisible with no explanation.
+
+    Anything at or above `max_index` is therefore not found at all, which is a real limit worth
+    saying out loud when a scan comes back short.
 
     Device *names* are not available through OpenCV on Windows without an extra dependency
-    (DirectShow enumeration), so cameras are reported by index. Worth revisiting if users end up
-    with several cameras and cannot tell them apart.
+    (DirectShow enumeration), so cameras are reported by index and backend. Worth revisiting if
+    users end up with several cameras and cannot tell them apart.
+
+    **The pipeline must be stopped.** On Windows an open device cannot be opened a second time, so
+    probing while capturing omits the camera currently in use. `LiveSource.discover` enforces that;
+    this function is the mechanism, not the guard.
     """
     found: list[CameraInfo] = []
 

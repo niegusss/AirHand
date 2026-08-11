@@ -22,10 +22,53 @@ if TYPE_CHECKING:
     from .settings import EngineSettings
 
 
+# Probing is the only portable way to enumerate with OpenCV — there is no device-list API. Each
+# miss costs a backend open attempt, so the ceiling stays low. Defined here rather than beside the
+# probe loop so the server can name the limit when a scan comes back empty, without importing
+# OpenCV to do it.
+MAX_CAMERA_PROBE_INDEX = 5
+
+
+@dataclass(frozen=True)
+class CameraInfo:
+    """One capture device, as discovered or as opened.
+
+    Lives here rather than in `camera/service.py` because that module imports OpenCV, and the
+    synthetic source has to be able to describe a device on a machine with no CV stack installed —
+    the same reason `main.py` imports the camera package lazily.
+    """
+
+    index: int
+    name: str
+    width: int
+    height: int
+    """What the driver actually granted — requests are advisory and often silently ignored."""
+    fps: float = 0.0
+    fourcc: str = ""
+
+    def to_message(self) -> dict[str, Any]:
+        """Wire shape for the `cameras` message.
+
+        `fps` and `fourcc` are deliberately left off: discovery does not request a format, so the
+        values it would report describe the driver's idle default rather than what the pipeline
+        would get. Reporting them would invite a choice made on a number that is not the answer.
+        """
+        return {
+            "index": self.index,
+            "name": self.name,
+            "width": self.width,
+            "height": self.height,
+        }
+
+
 @dataclass(frozen=True)
 class SourceStatus:
     camera: CameraState
     camera_name: str | None = None
+    """Which device index the status describes. `camera_name` embeds it in a display string, and
+    matching a device against the discovered list by parsing that string is the kind of second copy
+    this project keeps removing. None for a source that has no notion of a device index."""
+    camera_index: int | None = None
     message: str | None = None
     """Geometry the source's landmarks are normalized against.
 
@@ -125,6 +168,27 @@ class TelemetrySource(Protocol):
         consumer tells a fresh frame from a repeated read of the same one.
         """
         return None
+
+    def discover(self) -> list[CameraInfo]:
+        """Enumerate capture devices. Added in protocol 1.10.0.
+
+        **The pipeline must be stopped first.** On Windows an open device cannot be enumerated, so
+        probing while frames are being captured omits precisely the camera in use — the one the
+        user is most likely to be looking for. An implementation that cannot guarantee this must
+        raise rather than return a list it knows to be incomplete.
+
+        An empty list is a legitimate answer: a source with no camera behind it, or a machine with
+        nothing attached.
+        """
+        return []
+
+    def set_camera(self, index: int) -> None:
+        """Open a different device.
+
+        Unlike `apply_settings`, this **does** restart the pipeline — there is no way to change a
+        capture device without reopening it. An implementation that was running must come back
+        running, and one that was stopped must stay stopped and take the change on its next start.
+        """
 
     def apply_settings(self, settings: "EngineSettings") -> None:
         """Adopt already-validated settings.

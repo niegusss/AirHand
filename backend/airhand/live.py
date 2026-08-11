@@ -10,15 +10,16 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from dataclasses import replace
 
 import cv2
 
 from .calibration import CalibrationResult, CalibrationRunner, Observation
-from .camera import CameraService, CameraUnavailable
+from .camera import CameraService, CameraUnavailable, discover_cameras
 from .cursor import DEFAULT_HOTKEY, CursorState, KillSwitch, build_cursor_engine
 from .filters import LandmarkFilter
 from .gestures import GestureEngine
-from .pipeline import Sample, SourceStatus
+from .pipeline import CameraInfo, Sample, SourceStatus
 from .pointer import PointerTracker
 from .preview import PreviewEncoder
 from .protocol import landmark_count
@@ -104,7 +105,11 @@ class LiveSource:
         self._calibration = CalibrationRunner()
 
     def start(self) -> None:
-        if self._thread is not None:
+        # `is_alive()` rather than `is not None`. `_run` returns early when the camera cannot be
+        # opened, and it has no opportunity to clear this attribute on the way out — so a guard on
+        # `is not None` sees a thread that finished seconds ago and declines to start a new one.
+        # The user experiences that as a Start button that does nothing, forever, with no message.
+        if self._thread is not None and self._thread.is_alive():
             return
         self._stop_event.clear()
         self._set_status(SourceStatus(camera="starting", message="Opening camera"))
@@ -135,6 +140,58 @@ class LiveSource:
     def status(self) -> SourceStatus:
         with self._lock:
             return self._status
+
+    @property
+    def camera_index(self) -> int:
+        with self._lock:
+            return self._camera_index
+
+    def discover(self) -> list[CameraInfo]:
+        """Probe for capture devices.
+
+        **Refuses while the pipeline is running.** On Windows an open device cannot be opened a
+        second time, so probing mid-capture returns a list missing the camera currently in use —
+        the one the user is most likely looking for. Returning that list would be worse than
+        refusing: a device that is plainly working would appear not to exist, and nothing on screen
+        could explain it. The caller stops the pipeline first; the server does exactly that.
+        """
+        if self._thread is not None and self._thread.is_alive():
+            raise RuntimeError(
+                "Stop the pipeline before scanning for cameras — an open device cannot be "
+                "enumerated, so the scan would omit the camera currently in use."
+            )
+        return discover_cameras()
+
+    def set_camera(self, index: int) -> None:
+        """Reopen on a different device, restarting the pipeline if it was running.
+
+        Reusing `stop()` and `start()` is deliberate rather than lazy: `stop()` already disables
+        actuation, cancels a measurement in flight, releases the device, clears the last sample and
+        drops the stale preview. Every one of those has to happen for a camera switch too, and a
+        bespoke path here would be the copy that forgets one.
+
+        A consequence worth stating: **actuation is off after a camera switch**, because `stop()`
+        turns it off and nothing turns it back on. That matches the rule that actuation is
+        requested per session and never restored automatically.
+
+        A device that cannot be opened surfaces through the ordinary `camera: "error"` status from
+        `_run`. It is not rolled back to the previous camera: silently running a device the user
+        did not choose is the invisible inconsistency this project rules out, and the UI stays
+        reachable because it is driven by the socket, not by the camera.
+        """
+        was_running = self._thread is not None and self._thread.is_alive()
+        if was_running:
+            self.stop()
+
+        with self._lock:
+            self._camera_index = index
+
+        if was_running:
+            self.start()
+        else:
+            # Re-stamp so the reported index follows the choice even while stopped — otherwise the
+            # UI would show the old device until the next start, having just been told otherwise.
+            self._set_status(self.status())
 
     def cursor_state(self) -> CursorState:
         if self._cursor is None:
@@ -202,7 +259,10 @@ class LiveSource:
 
     def _set_status(self, status: SourceStatus) -> None:
         with self._lock:
-            self._status = status
+            # Stamped here rather than at each of the seven construction sites. Which device the
+            # status describes is never a decision any of them makes — it is always the one this
+            # source is set to — and one place that cannot be forgotten beats seven that can.
+            self._status = replace(status, camera_index=self._camera_index)
 
     def _run(self) -> None:
         camera = CameraService(

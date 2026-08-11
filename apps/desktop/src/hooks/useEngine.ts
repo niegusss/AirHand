@@ -46,6 +46,16 @@ export interface EngineCommands {
   /** Record that the wizard was finished. Changes no setting — it only marks the profile. */
   completeCalibration: () => void
   /**
+   * Scan for capture devices.
+   *
+   * Takes the pipeline down and puts it back — an open camera cannot be enumerated on Windows.
+   * Deliberately manual, and never called on mount: probing opens hardware, and a component that
+   * scanned when it rendered would blink the camera on every visit to this screen.
+   */
+  discoverCameras: () => void
+  /** Choose a capture device. A proposal like everything else here; the engine decides. */
+  selectCamera: (index: number) => void
+  /**
    * Run discovery again, which in the desktop shell also means starting the engine if it is not
    * running. Deliberately manual: an automatic loop would relaunch a process that opens a camera,
    * every few seconds, for as long as it keeps failing.
@@ -99,6 +109,14 @@ export function useEngineCommands(): EngineCommands {
     engineClient.send({ type: 'calibrate', action: 'complete' })
   }, [])
 
+  const discoverCameras = useCallback(() => {
+    engineClient.send({ type: 'command', action: 'discover_cameras' })
+  }, [])
+
+  const selectCamera = useCallback((index: number) => {
+    engineClient.send({ type: 'select_camera', index })
+  }, [])
+
   // Not a `send` like the rest: there is no socket to send it on. This is the one command that
   // exists precisely because the connection is not there.
   const reconnect = useCallback(() => {
@@ -116,6 +134,8 @@ export function useEngineCommands(): EngineCommands {
     startMeasurement,
     cancelMeasurement,
     completeCalibration,
+    discoverCameras,
+    selectCamera,
     reconnect,
   }
 }

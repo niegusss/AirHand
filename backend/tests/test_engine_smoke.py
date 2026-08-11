@@ -21,9 +21,10 @@ from airhand import protocol
 from airhand.communication.server import EngineServer
 from airhand.cursor import CursorState
 from airhand.handshake import remove_handshake, write_handshake
+from airhand.pipeline import MAX_CAMERA_PROBE_INDEX, CameraInfo
 from airhand.profile import load_profile, save_profile
 from airhand.settings import DEFAULTS, merge
-from airhand.telemetry import SyntheticSource
+from airhand.telemetry import SYNTHETIC_CAMERA_INDEX, SyntheticSource
 
 TOKEN = "test-token-not-a-secret"
 
@@ -641,6 +642,385 @@ def test_settings_reach_the_source() -> None:
 
 def test_capabilities_advertise_the_settings_channel() -> None:
     assert "settings" in protocol.hello()["capabilities"]
+
+
+# ------------------------------------------------------------------- cameras
+#
+# The device list and the pipeline are coupled in a way nothing else in this protocol is: probing
+# requires the camera released, so a scan is the only client request that takes the pipeline down
+# and puts it back. What is tested here is that it always puts it back, that it says so while it is
+# down, and that the choice it produces outlives everything that rewrites the profile.
+
+
+class _CameraSource(SyntheticSource):
+    """Synthetic telemetry that also claims a couple of devices, and records what it was asked."""
+
+    def __init__(self, devices: list[CameraInfo] | None = None, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._devices = (
+            devices
+            if devices is not None
+            else [
+                CameraInfo(index=0, name="Camera 0 (MSMF)", width=640, height=480),
+                CameraInfo(index=1, name="Camera 1 (MSMF)", width=1280, height=720),
+            ]
+        )
+        self.selected: list[int] = []
+        self.scans = 0
+        self.starts = 0
+        self.stops = 0
+
+    def discover(self) -> list[CameraInfo]:
+        self.scans += 1
+        return list(self._devices)
+
+    def set_camera(self, index: int) -> None:
+        self.selected.append(index)
+
+    def start(self) -> None:
+        self.starts += 1
+        super().start()
+
+    def stop(self) -> None:
+        self.stops += 1
+        super().stop()
+
+
+async def _collect_until(client, predicate, limit: int = 400) -> list[dict]:
+    """Every message up to and including the first one satisfying `predicate`.
+
+    Order matters in these tests and the socket preserves it, so a collected list is how the
+    intermediate states of a scan are observed without racing a fast operation.
+    """
+    seen: list[dict] = []
+    for _ in range(limit):
+        raw = await asyncio.wait_for(client.recv(), timeout=5.0)
+        if isinstance(raw, bytes):
+            continue
+        message = json.loads(raw)
+        seen.append(message)
+        if predicate(message):
+            return seen
+    raise AssertionError(f"predicate never satisfied within {limit} messages")
+
+
+def _scan_finished(message: dict) -> bool:
+    return message["type"] == "cameras" and not message["scanning"]
+
+
+def test_cameras_arrive_on_connect_without_probing_anything() -> None:
+    """A reconnect must not open hardware.
+
+    Reconnects happen on their own — backoff, a reload, the shell restarting the engine — and a
+    scan releases and reopens the camera. Doing that unasked would make the preview blink for
+    reasons the user never triggered. An empty device list on connect is the honest state: nobody
+    has scanned yet.
+    """
+
+    async def scenario() -> tuple[dict, int]:
+        source = _CameraSource(target_fps=120.0)
+        source.start()
+        server = EngineServer(source=source, token=TOKEN, port=0)
+        task = await _serve(server)
+        try:
+            async with connect(f"ws://127.0.0.1:{server.port}") as client:
+                await _authenticate(client)
+                return await _await_type(client, "cameras"), source.scans
+        finally:
+            task.cancel()
+            await server.close()
+
+    message, scans = _run(scenario())
+    assert message["devices"] == []
+    assert message["scanning"] is False
+    assert scans == 0, "connecting must not probe for devices"
+
+
+def test_a_scan_takes_the_pipeline_down_and_gives_it_back() -> None:
+    """The pipeline has to come back whatever the scan found — and it has to say it went away.
+
+    `tracking` is reported as `idle` for the duration rather than left at `running`: the client
+    watches for a stalled stream and would report a broken pipeline a few hundred milliseconds into
+    a perfectly healthy scan.
+    """
+
+    async def scenario() -> tuple[list[dict], _CameraSource]:
+        source = _CameraSource(target_fps=120.0)
+        source.start()
+        server = EngineServer(source=source, token=TOKEN, port=0)
+        task = await _serve(server)
+        try:
+            async with connect(f"ws://127.0.0.1:{server.port}") as client:
+                await _authenticate(client)
+                await _await_type(client, "cameras")
+                await client.send(
+                    json.dumps({"type": "command", "action": "discover_cameras"})
+                )
+                return await _collect_until(client, _scan_finished), source
+        finally:
+            task.cancel()
+            await server.close()
+
+    seen, source = _run(scenario())
+
+    final = seen[-1]
+    assert [device["index"] for device in final["devices"]] == [0, 1]
+    assert final["reason"] is None
+
+    statuses = [message for message in seen if message["type"] == "status"]
+    assert any(status["tracking"] == "idle" for status in statuses), (
+        "a scan that silently keeps claiming to track reads as a stalled pipeline"
+    )
+    assert statuses[-1]["tracking"] == "running", "the pipeline must be handed back"
+    assert source.stops == 1 and source.starts == 2, "stopped once, started again"
+
+
+def test_a_scan_leaves_a_stopped_pipeline_stopped() -> None:
+    """Symmetry with the above: a scan restores what it found, it does not start tracking."""
+
+    async def scenario() -> dict:
+        source = _CameraSource(target_fps=120.0)
+        source.start()
+        server = EngineServer(source=source, token=TOKEN, port=0)
+        task = await _serve(server)
+        try:
+            async with connect(f"ws://127.0.0.1:{server.port}") as client:
+                await _authenticate(client)
+                await _await_type(client, "cameras")
+                await client.send(json.dumps({"type": "command", "action": "stop"}))
+                await _await_type(client, "status")
+
+                await client.send(
+                    json.dumps({"type": "command", "action": "discover_cameras"})
+                )
+                await _collect_until(client, _scan_finished)
+                return _status_of(server)
+        finally:
+            task.cancel()
+            await server.close()
+
+    assert _run(scenario())["tracking"] == "idle"
+
+
+def _status_of(server: EngineServer) -> dict:
+    return server._status_message()  # noqa: SLF001 - reading the state the wire would carry
+
+
+def test_a_scan_that_finds_nothing_explains_the_probe_limit() -> None:
+    """"No cameras found" with no further detail is a dead end.
+
+    Indices are probed up to a ceiling, so a device numbered above it is genuinely invisible — and
+    a webcam held by another application cannot be opened here either. Both are things the user can
+    act on, and neither is guessable from an empty list.
+    """
+
+    async def scenario() -> dict:
+        source = _CameraSource(devices=[], target_fps=120.0)
+        source.start()
+        server = EngineServer(source=source, token=TOKEN, port=0)
+        task = await _serve(server)
+        try:
+            async with connect(f"ws://127.0.0.1:{server.port}") as client:
+                await _authenticate(client)
+                await _await_type(client, "cameras")
+                await client.send(
+                    json.dumps({"type": "command", "action": "discover_cameras"})
+                )
+                return (await _collect_until(client, _scan_finished))[-1]
+        finally:
+            task.cancel()
+            await server.close()
+
+    reason = _run(scenario())["reason"]
+    assert reason and str(MAX_CAMERA_PROBE_INDEX - 1) in reason
+
+
+def test_a_failed_scan_still_hands_the_pipeline_back() -> None:
+    """The `finally` this test exists for.
+
+    A probe that raises must not cost the user a working camera — that would turn a diagnostic
+    action into the thing that breaks the app.
+    """
+
+    class _BrokenScan(_CameraSource):
+        def discover(self) -> list[CameraInfo]:
+            raise RuntimeError("the capture backend exploded")
+
+    async def scenario() -> tuple[dict, dict]:
+        source = _BrokenScan(target_fps=120.0)
+        source.start()
+        server = EngineServer(source=source, token=TOKEN, port=0)
+        task = await _serve(server)
+        try:
+            async with connect(f"ws://127.0.0.1:{server.port}") as client:
+                await _authenticate(client)
+                await _await_type(client, "cameras")
+                await client.send(
+                    json.dumps({"type": "command", "action": "discover_cameras"})
+                )
+                seen = await _collect_until(client, _scan_finished)
+                return seen[-1], _status_of(server)
+        finally:
+            task.cancel()
+            await server.close()
+
+    cameras, status = _run(scenario())
+    assert "exploded" in cameras["reason"]
+    assert status["tracking"] == "running", "a failed scan must not leave the pipeline down"
+
+
+def test_selecting_a_camera_reaches_the_source_and_is_persisted(tmp_path: Path) -> None:
+    profile_path = tmp_path / "profile.json"
+
+    async def scenario() -> tuple[dict, _CameraSource]:
+        source = _CameraSource(target_fps=120.0)
+        source.start()
+        server = EngineServer(
+            source=source, token=TOKEN, port=0, profile=load_profile(profile_path)
+        )
+        task = await _serve(server)
+        try:
+            async with connect(f"ws://127.0.0.1:{server.port}") as client:
+                await _authenticate(client)
+                await _await_type(client, "cameras")
+                await client.send(json.dumps({"type": "select_camera", "index": 1}))
+                return await _await_type(client, "cameras"), source
+        finally:
+            task.cancel()
+            await server.close()
+
+    message, source = _run(scenario())
+    assert message["selected"] == 1
+    assert source.selected == [1], "applied, not merely echoed back"
+    assert load_profile(profile_path).camera_index == 1
+
+
+def test_re_selecting_the_current_camera_is_not_a_no_op() -> None:
+    """Picking the same device again is how a user retries one that failed to open.
+
+    Short-circuiting on equality would turn the single obvious recovery action into a button that
+    does nothing, in exactly the situation where nothing else is working either.
+    """
+
+    async def scenario() -> _CameraSource:
+        source = _CameraSource(target_fps=120.0)
+        source.start()
+        server = EngineServer(source=source, token=TOKEN, port=0)
+        task = await _serve(server)
+        try:
+            async with connect(f"ws://127.0.0.1:{server.port}") as client:
+                await _authenticate(client)
+                await _await_type(client, "cameras")
+                await client.send(json.dumps({"type": "select_camera", "index": 1}))
+                await _await_type(client, "cameras")
+                await client.send(json.dumps({"type": "select_camera", "index": 1}))
+                await _await_type(client, "cameras")
+                return source
+        finally:
+            task.cancel()
+            await server.close()
+
+    assert _run(scenario()).selected == [1, 1]
+
+
+@pytest.mark.parametrize("index", ["1", 1.5, -1, True, None])
+def test_a_camera_index_that_is_not_one_is_refused(index) -> None:
+    """`True` is in the list deliberately — bool subclasses int and would select camera 1."""
+
+    async def scenario() -> tuple[dict, _CameraSource]:
+        source = _CameraSource(target_fps=120.0)
+        source.start()
+        server = EngineServer(source=source, token=TOKEN, port=0)
+        task = await _serve(server)
+        try:
+            async with connect(f"ws://127.0.0.1:{server.port}") as client:
+                await _authenticate(client)
+                await _await_type(client, "cameras")
+                await client.send(json.dumps({"type": "select_camera", "index": index}))
+                return await _await_type(client, "error"), source
+        finally:
+            task.cancel()
+            await server.close()
+
+    error, source = _run(scenario())
+    assert error["code"] == "invalid_settings"
+    assert source.selected == [], "a refused index must never reach the source"
+
+
+def test_an_ordinary_settings_change_does_not_undo_the_camera_choice(tmp_path: Path) -> None:
+    """The same trap as the calibrated mark, and a quieter one.
+
+    Every save rewrites the whole profile, so a value the server forgets to carry is erased — and
+    here it would be erased by dragging an unrelated slider, with nothing connecting cause to
+    effect.
+    """
+    profile_path = tmp_path / "profile.json"
+
+    async def scenario() -> None:
+        server = _server(profile=load_profile(profile_path))
+        task = await _serve(server)
+        try:
+            async with connect(f"ws://127.0.0.1:{server.port}") as client:
+                await _authenticate(client)
+                await _await_type(client, "cameras")
+                await client.send(json.dumps({"type": "select_camera", "index": 2}))
+                await _await_type(client, "cameras")
+                await client.send(json.dumps({"type": "set_settings", "pointer": {"beta": 4.5}}))
+                await _await_type(client, "settings")
+        finally:
+            task.cancel()
+            await server.close()
+
+    _run(scenario())
+
+    stored = load_profile(profile_path)
+    assert stored.camera_index == 2, "a slider must not cost the user their camera"
+    assert stored.settings.pointer.beta == pytest.approx(4.5)
+
+
+def test_a_saved_camera_choice_is_reported_on_connect(tmp_path: Path) -> None:
+    """The engine is authoritative here too — the UI renders what arrived, not what it remembers."""
+    profile_path = tmp_path / "profile.json"
+    save_profile(DEFAULTS, profile_path, camera_index=1)
+
+    async def scenario() -> dict:
+        profile = load_profile(profile_path)
+        server = _server(profile=profile, camera_index=profile.camera_index)
+        task = await _serve(server)
+        try:
+            async with connect(f"ws://127.0.0.1:{server.port}") as client:
+                await _authenticate(client)
+                return await _await_type(client, "cameras")
+        finally:
+            task.cancel()
+            await server.close()
+
+    assert _run(scenario())["selected"] == 1
+
+
+def test_the_status_carries_the_device_index_not_just_its_name() -> None:
+    """`cameraName` embeds the index in a display string.
+
+    Matching a device against the discovered list by parsing that string would be the second copy
+    of a fact that this protocol keeps deleting second copies of.
+    """
+
+    async def scenario() -> dict:
+        server = _server()
+        task = await _serve(server)
+        try:
+            async with connect(f"ws://127.0.0.1:{server.port}") as client:
+                await _authenticate(client)
+                return await _await_type(client, "status")
+        finally:
+            task.cancel()
+            await server.close()
+
+    assert _run(scenario())["cameraIndex"] == SYNTHETIC_CAMERA_INDEX
+
+
+def test_capabilities_advertise_the_camera_channel() -> None:
+    assert "cameras" in protocol.hello()["capabilities"]
 
 
 def test_server_does_not_resend_an_unchanged_frame() -> None:
