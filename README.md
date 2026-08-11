@@ -118,8 +118,8 @@ Dev machine, Thronmax Stream Go Pro webcam, MediaPipe `lite`, CPU only.
 |---|---|---|
 | Processing latency | < 50 ms | **9.0 ms** at 640×480 — frame-in-hand → landmarks-ready. A floor, not the end-to-end number |
 | Throughput | 30–60 FPS | **30 FPS** — the camera's ceiling, not the model's. Inference alone would allow ~110 |
-| Startup, installed app | < 3 s | **3.14 s** cold, **2.84 s** warm, from click to a live authenticated connection |
-| Engine startup | — | 1.31 s from app launch; 0.29 s from closing the window to the engine being gone |
+| Startup, installed app | < 3 s | **1.8–2.8 s** warm, **3.1–4.1 s** on the first launch after installing — click to a live connection, seven launches across two builds |
+| Engine startup | — | 1.3–1.7 s from app launch to a published handshake; 0.1–0.3 s from closing the window to the engine being gone |
 | Camera preview | free | 30.4 fps / 11.5 ms with it off **and** on; ~5.7 KB per frame |
 | Cursor jitter / lag | — | 1.3 px RMS at rest, 10.2 px trailing mid-sweep, on 2560×1080 |
 | Installer | — | 80.4 MB, 12.6 s to install |
