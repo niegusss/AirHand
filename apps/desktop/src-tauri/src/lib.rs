@@ -47,13 +47,15 @@ pub fn run() {
     .plugin(tauri_plugin_shell::init())
     .manage(engine::EngineState::default())
     .setup(|app| {
-      if cfg!(debug_assertions) {
-        app.handle().plugin(
-          tauri_plugin_log::Builder::default()
-            .level(log::LevelFilter::Info)
-            .build(),
-        )?;
-      }
+      // Registered in release too, and that is the point. The scaffold gated this on
+      // debug_assertions, which switched the log off in the only build where nobody can see a
+      // console: the engine's own output is forwarded here, and a packaged app with no log is a
+      // failure nobody can diagnose. Targets are stdout and the app's log directory.
+      app.handle().plugin(
+        tauri_plugin_log::Builder::default()
+          .level(log::LevelFilter::Info)
+          .build(),
+      )?;
       Ok(())
     })
     .invoke_handler(tauri::generate_handler![read_handshake])
