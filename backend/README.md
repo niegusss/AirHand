@@ -1,5 +1,7 @@
 # AirHand engine
 
+_Project overview, download and architecture: [the root README](../README.md)._
+
 The Python computer-vision engine. Runs standalone — the desktop app is a client of this process,
 not its owner.
 

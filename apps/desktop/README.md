@@ -1,5 +1,7 @@
 # AirHand Mouse — desktop app
 
+_Project overview, download and architecture: [the root README](../../README.md)._
+
 React + TypeScript + Vite, wrapped in a Tauri v2 shell. The app contains **no computer-vision
 logic**: every landmark, threshold and filter lives in the Python engine, and this side is a
 consumer of the WebSocket contract in `shared/protocol/`.
