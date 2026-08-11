@@ -1,0 +1,132 @@
+# Builds the Windows installer on a clean runner and attaches it to a GitHub release.
+#
+# The point of building it here rather than uploading a local file: the machine that produced the
+# artifact has never had this project's dependencies installed by hand, so a bundle that quietly
+# borrows from a developer's Python or Node installation fails here instead of on a user's PC.
+#
+# Push a `v*` tag to publish. Run it manually (workflow_dispatch) to build without publishing —
+# the installer is uploaded as a workflow artifact either way.
+
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows-installer:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # A tag that disagrees with tauri.conf.json would publish v0.2.0 containing a 0.1.0
+      # installer. Cheaper to fail here than to explain it later.
+      - name: Check the tag against the app version
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $config = Get-Content apps/desktop/src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
+          $expected = "v$($config.version)"
+          if ($env:GITHUB_REF_NAME -ne $expected) {
+            throw "tag $env:GITHUB_REF_NAME does not match tauri.conf.json version ($expected)"
+          }
+          "version $expected"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: backend/requirements-dev.txt
+
+      - name: Install engine dependencies
+        working-directory: backend
+        run: pip install -r requirements-dev.txt
+
+      # One directory, not one file — see the reasoning in backend/airhand.spec.
+      - name: Freeze the engine
+        working-directory: backend
+        run: pyinstaller airhand.spec
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: apps/desktop
+        run: npm ci
+
+      - name: Cache the Rust build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            apps/desktop/src-tauri/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('apps/desktop/src-tauri/Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+
+      # `bundle.resources` fails the build on a glob that matches nothing, so this has to happen
+      # before tauri build, not alongside it.
+      - name: Copy the engine into the bundle
+        working-directory: apps/desktop
+        run: npm run engine:sync
+
+      - name: Build the installer
+        working-directory: apps/desktop
+        run: npm run tauri build
+
+      - name: Locate the installer
+        id: installer
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem apps/desktop/src-tauri/target/release/bundle/nsis/*-setup.exe |
+            Select-Object -First 1
+          if (-not $exe) { throw "no NSIS installer was produced" }
+          "path=$($exe.FullName)" | Out-File $env:GITHUB_OUTPUT -Append
+          "{0} ({1:N1} MB)" -f $exe.Name, ($exe.Length / 1MB)
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: airhand-mouse-installer
+          path: ${{ steps.installer.outputs.path }}
+          if-no-files-found: error
+
+      - name: Publish the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Single-quoted here-string: the notes are markdown full of backticks, which a
+          # double-quoted one would eat as escape characters. The tag and repository come from
+          # GitHub's own expressions, substituted before PowerShell sees the script.
+          $notes = @'
+          ## AirHand Mouse ${{ github.ref_name }}
+
+          Download the `.exe` below and run it. It carries the frozen Python engine, so the machine
+          needs no Python installation. Installation is per-user and asks for no administrator
+          rights.
+
+          **Requirements:** Windows 10 or newer, a webcam, and the WebView2 runtime (present on
+          Windows 11; the installer fetches it if it is missing).
+
+          **SmartScreen will warn you** — the installer is not code-signed. Choose *More info →
+          Run anyway*.
+
+          First launch walks through a short calibration wizard. Cursor control is off until you
+          enable it, and `Ctrl+Alt+Space` disables it instantly at any time.
+
+          See the [README](https://github.com/${{ github.repository }}#readme) for what it does and
+          how it is built.
+          '@
+          gh release create '${{ github.ref_name }}' `
+            --title 'AirHand Mouse ${{ github.ref_name }}' `
+            --notes $notes `
+            '${{ steps.installer.outputs.path }}'
