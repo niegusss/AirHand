@@ -22,7 +22,7 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # A tag that disagrees with tauri.conf.json would publish v0.2.0 containing a 0.1.0
       # installer. Cheaper to fail here than to explain it later.
@@ -37,7 +37,7 @@ jobs:
           }
           "version $expected"
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.13'
           cache: pip
@@ -52,7 +52,7 @@ jobs:
         working-directory: backend
         run: pyinstaller airhand.spec
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '24'
           cache: npm
@@ -63,7 +63,7 @@ jobs:
         run: npm ci
 
       - name: Cache the Rust build
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -92,7 +92,7 @@ jobs:
           "path=$($exe.FullName)" | Out-File $env:GITHUB_OUTPUT -Append
           "{0} ({1:N1} MB)" -f $exe.Name, ($exe.Length / 1MB)
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: airhand-mouse-installer
           path: ${{ steps.installer.outputs.path }}
