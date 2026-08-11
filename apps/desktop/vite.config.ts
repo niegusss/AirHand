@@ -22,6 +22,21 @@ const protocolSpec = JSON.parse(
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  // `tauri dev` starts this server itself and then points the webview at a fixed URL, so the port
+  // is part of the contract in tauri.conf.json rather than a convenience. Without strictPort, a
+  // busy 5173 silently moves the dev server and the window comes up blank.
+  server: {
+    port: 5173,
+    strictPort: true,
+  },
+  // Tauri's own output has to stay on screen; Vite clearing it hides the Rust build errors.
+  clearScreen: false,
+  envPrefix: ['VITE_', 'TAURI_ENV_'],
+  build: {
+    // The only browser this ships to is WebView2 (Chromium). Transpiling for older engines buys
+    // nothing and costs bundle size.
+    target: 'chrome105',
+  },
   define: {
     __PROTOCOL_VERSION__: JSON.stringify(protocolSpec.version),
     __LANDMARK_COUNT__: JSON.stringify(protocolSpec.landmarkCount),
