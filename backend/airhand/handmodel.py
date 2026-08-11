@@ -15,6 +15,7 @@ apparent hand size and every distance below reads as a multiple of it.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 Point = tuple[float, float]
@@ -93,8 +94,13 @@ def _finger_points(finger: str, extended: bool) -> list[Point]:
 
     # Curled: the segment beyond the PIP folds back toward the palm and slightly across it, which
     # puts the angle at the PIP well under any sane "extended" threshold.
+    #
+    # The sideways part is a fraction of the finger's own length rather than a fixed offset. As a
+    # constant it moved a short pinky as far as a long middle finger, which drew curled fingertips
+    # out past the edge of the palm and across their neighbours' knuckles — every curled pose came
+    # out as a knot of crossing bones.
     back = (-dx, -dy)
-    across = (-dy * 0.35, dx * 0.35)
+    across = (-dy * 0.16 * length, dx * 0.16 * length)
     dip = (
         pip[0] + back[0] * length * 0.26 + across[0],
         pip[1] + back[1] * length * 0.26 + across[1],
@@ -106,9 +112,34 @@ def _finger_points(finger: str, extended: bool) -> list[Point]:
     return [mcp, pip, dip, tip]
 
 
-def _offset_from(target: Point, gap: float) -> Point:
-    """Place the thumb tip `gap` hand-scale units from a fingertip, along a fixed direction."""
-    return (target[0] - gap * 0.6, target[1] + gap * 0.8)
+# A thumb that reaches for a fingertip may stretch, but it may never fold back through its own
+# knuckle. Only reachable when the requested gap exceeds the distance to the fingertip — a fist
+# asked to hold its thumb wide open, which the demo script does and never draws.
+_MIN_THUMB_REACH = 0.10
+
+
+def _thumb_reaching(target: Point, gap: float) -> list[Point]:
+    """Thumb chain that reaches toward `target` and stops `gap` hand-scale units short of it.
+
+    Everything sits on the line from the thumb knuckle to the fingertip, which is the direction a
+    thumb actually travels when it reaches for one. The previous version moved the tip alone, along
+    a fixed diagonal that ignored where the rest of the thumb was: the measured pinch distance came
+    out right, and the drawn hand had a thumb tip flung across the frame with a bone stretched to
+    meet it. The overlay is how this fixture is read during UI work, so a pose that measures
+    correctly and looks impossible is only half a fixture.
+
+    `gap` is preserved exactly, because it is the quantity the Gesture Engine thresholds on.
+    """
+    mcp = _MCP["thumb"]
+    span = math.hypot(target[0] - mcp[0], target[1] - mcp[1])
+    toward = ((target[0] - mcp[0]) / span, (target[1] - mcp[1]) / span)
+    reach = max(span - gap, _MIN_THUMB_REACH)
+    return [
+        mcp,
+        (mcp[0] + toward[0] * reach * 0.42, mcp[1] + toward[1] * reach * 0.42),
+        (mcp[0] + toward[0] * reach * 0.72, mcp[1] + toward[1] * reach * 0.72),
+        (mcp[0] + toward[0] * reach, mcp[1] + toward[1] * reach),
+    ]
 
 
 def make_hand(
@@ -136,14 +167,16 @@ def make_hand(
         for landmark_index, point in zip(chain, _finger_points(finger, pose.extended(finger))):
             points[landmark_index] = point
 
-    if pinch_index is not None:
-        target = points[8]
+    reach_for = 8 if pinch_index is not None else 12 if pinch_middle is not None else None
+    if reach_for is not None:
+        gap = pinch_index if pinch_index is not None else pinch_middle
+        assert gap is not None
+        target = points[reach_for]
         assert target is not None
-        points[4] = _offset_from(target, pinch_index)
-    elif pinch_middle is not None:
-        target = points[12]
-        assert target is not None
-        points[4] = _offset_from(target, pinch_middle)
+        # The whole thumb moves, not just its tip: the pose placed a thumb that is not reaching for
+        # anything, and only the tip of it is being asked to.
+        for landmark_index, point in zip(_CHAIN["thumb"], _thumb_reaching(target, gap)):
+            points[landmark_index] = point
 
     landmarks: list[list[float]] = []
     for point in points:

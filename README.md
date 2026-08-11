@@ -204,7 +204,7 @@ handshake file — see [`apps/desktop/README.md`](apps/desktop/README.md).
 ### Checks
 
 ```powershell
-cd backend;            .\.venv\Scripts\python.exe -m pytest       # 219 tests, no webcam required
+cd backend;            .\.venv\Scripts\python.exe -m pytest       # 261 tests, no webcam required
 cd apps\desktop;       npx tsc --noEmit -p tsconfig.app.json
                        npm run lint                               # oxlint, not eslint
                        npm run test                               # 56 tests
@@ -212,7 +212,7 @@ cd apps\desktop;       npx tsc --noEmit -p tsconfig.app.json
 cd src-tauri;          cargo test                                 # 11 tests
 ```
 
-286 tests in total. They cover the wire contract, the handshake, gesture classification, cursor
+328 tests in total. They cover the wire contract, the handshake, gesture classification, cursor
 mapping and every actuation safety rule, the settings channel, calibration derivation and the
 preview stream. Detection *quality* is not among them — that needs a real hand in front of a real
 camera.

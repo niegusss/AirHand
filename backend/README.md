@@ -184,13 +184,14 @@ removes the handshake file, a hard kill does not.
 .\.venv\Scripts\python.exe -m pytest
 ```
 
-219 tests, no webcam required. They cover ephemeral port binding, atomic handshake writes, token
+261 tests, no webcam required. They cover ephemeral port binding, atomic handshake writes, token
 auth, protocol-version agreement, telemetry shape, `stop` halting the stream, duplicate-frame
 suppression, model presence, blank/noise frame handling, out-of-order timestamps, the
 missing-camera error path, gesture classification, hysteresis and dropout grace, cursor mapping and
 actuation safety, the pointer stage's anchor, hold and dropout rules, the settings channel's
-validation, persistence and flag precedence, and the preview stream's opt-in, throttling and
-teardown.
+validation, persistence and flag precedence, the preview stream's opt-in, throttling and teardown,
+and the synthetic hand's own geometry — that a pose measures what it claims *and* could be made by
+a hand.
 
 Detection *quality* is not covered — that needs a real hand in front of a real camera. What the
 suite proves is wiring, contracts and failure handling.
