@@ -26,6 +26,10 @@ jobs:
 
       # A tag that disagrees with tauri.conf.json would publish v0.2.0 containing a 0.1.0
       # installer. Cheaper to fail here than to explain it later.
+      #
+      # This guard is necessary and was not sufficient: it compares the tag to the config and stops
+      # there. v0.2.0 passed it and still shipped a 0.1.0 installer, because the artifact was never
+      # compared to anything. See "Locate the installer" below.
       - name: Check the tag against the app version
         if: startsWith(github.ref, 'refs/tags/v')
         shell: pwsh
@@ -78,19 +82,47 @@ jobs:
         working-directory: apps/desktop
         run: npm run engine:sync
 
+      # The Rust cache covers target/, and target/release/bundle/nsis/ rides along inside it — so a
+      # restored cache arrives carrying the *previous* release's installer. Two .exe files then sit
+      # in the output directory and only one of them is this build's.
+      #
+      # Deleting the bundle output costs nothing: it is the packaging step's product, not compiled
+      # objects, so nothing here is recompiled because of it.
+      - name: Clear bundles left behind by the cache
+        working-directory: apps/desktop/src-tauri
+        shell: pwsh
+        run: |
+          if (Test-Path target/release/bundle) {
+            Get-ChildItem target/release/bundle/nsis/*-setup.exe -ErrorAction SilentlyContinue |
+              ForEach-Object { "removing stale $($_.Name)" }
+            Remove-Item target/release/bundle -Recurse -Force
+          }
+
       - name: Build the installer
         working-directory: apps/desktop
         run: npm run tauri build
 
+      # Matches the installer against the configured version rather than taking whatever sorts
+      # first. The check at the top of this file compares the *tag* to the config; nothing compared
+      # the config to the *artifact* — which is how v0.2.0 shipped a freshly built 0.1.0 installer
+      # restored from the cache, named correctly, attached confidently, and wrong.
       - name: Locate the installer
         id: installer
         shell: pwsh
         run: |
-          $exe = Get-ChildItem apps/desktop/src-tauri/target/release/bundle/nsis/*-setup.exe |
-            Select-Object -First 1
-          if (-not $exe) { throw "no NSIS installer was produced" }
-          "path=$($exe.FullName)" | Out-File $env:GITHUB_OUTPUT -Append
-          "{0} ({1:N1} MB)" -f $exe.Name, ($exe.Length / 1MB)
+          $config = Get-Content apps/desktop/src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
+          $produced = @(Get-ChildItem apps/desktop/src-tauri/target/release/bundle/nsis/*-setup.exe)
+          if ($produced.Count -eq 0) { throw "no NSIS installer was produced" }
+
+          $wanted = "*_$($config.version)_*-setup.exe"
+          $exe = @($produced | Where-Object { $_.Name -like $wanted })
+          if ($exe.Count -ne 1) {
+            throw ("expected exactly one installer matching {0}, found: {1}" -f
+              $wanted, ($produced.Name -join ', '))
+          }
+
+          "path=$($exe[0].FullName)" | Out-File $env:GITHUB_OUTPUT -Append
+          "{0} ({1:N1} MB)" -f $exe[0].Name, ($exe[0].Length / 1MB)
 
       - uses: actions/upload-artifact@v7
         with:
