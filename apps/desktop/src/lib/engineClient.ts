@@ -20,7 +20,7 @@
  * Handlers are also detached on teardown, so a closing socket goes quiet immediately.
  */
 
-import { discoverEngine } from './discovery'
+import { discoverEngine, isTauriRuntime } from './discovery'
 import {
   isPreviewFrame,
   isProtocolCompatible,
@@ -103,7 +103,11 @@ export class EngineClient {
     if (generation !== this.generation) return
 
     const connection = useConnectionStore.getState()
-    connection.setPhase(this.attempt === 0 ? 'connecting' : 'reconnecting')
+    // `starting` is not a nicer word for `connecting`: inside the shell, discovery may be waiting
+    // on an engine process it just launched. In a browser there is nothing to launch, so claiming
+    // to start something would be a lie.
+    const starting = this.attempt === 0 && isTauriRuntime()
+    connection.setPhase(starting ? 'starting' : this.attempt === 0 ? 'connecting' : 'reconnecting')
 
     const discovery = await discoverEngine()
     // discoverEngine is async, so the world may have moved on while it resolved.
@@ -117,6 +121,8 @@ export class EngineClient {
     }
 
     connection.setEndpoint(discovery.url)
+    // The engine exists now; what remains is an ordinary socket.
+    if (starting) connection.setPhase('connecting')
 
     // Never run two sockets side by side.
     this.teardownSocket(1000, 'replaced by a newer connection')

@@ -1,7 +1,9 @@
-import { Camera, Gauge, Hand, Timer, TriangleAlert, Video } from 'lucide-react'
+import { Camera, Gauge, Hand, RotateCw, Timer, TriangleAlert, Video } from 'lucide-react'
 
 import { CameraPreview } from '@/components/CameraPreview'
 import { StatusTile, type Tone } from '@/components/StatusTile'
+import { Button } from '@/components/ui/button'
+import { useEngineCommands } from '@/hooks/useEngine'
 import { useNow } from '@/hooks/useNow'
 import { gestureLabel } from '@/lib/protocol'
 import { useConnectionStore } from '@/stores/connectionStore'
@@ -31,6 +33,7 @@ export function DashboardPage() {
   const phase = useConnectionStore((state) => state.phase)
   const connectionError = useConnectionStore((state) => state.error)
   const connected = phase === 'connected'
+  const { reconnect } = useEngineCommands()
 
   // Narrow selectors: an FPS tick must not re-render anything that does not display FPS.
   const camera = useTrackingStore((state) => state.camera)
@@ -68,7 +71,7 @@ export function DashboardPage() {
           role="alert"
         >
           <TriangleAlert className="mt-0.5 size-4 shrink-0 text-status-down" aria-hidden />
-          <div className="min-w-0">
+          <div className="min-w-0 flex-1">
             <p className="text-sm font-medium text-status-down">
               Engine unavailable ({connectionError.code})
             </p>
@@ -76,6 +79,12 @@ export function DashboardPage() {
               {connectionError.message}
             </p>
           </div>
+          {/* Deliberately a button and not a timer: retrying means launching a process that opens
+              a camera, and a loop doing that unattended is worse than a failure that waits. */}
+          <Button variant="outline" size="sm" className="shrink-0 self-center" onClick={reconnect}>
+            <RotateCw className="size-3.5" aria-hidden />
+            Try again
+          </Button>
         </div>
       ) : null}
 

@@ -45,6 +45,12 @@ export interface EngineCommands {
   cancelMeasurement: () => void
   /** Record that the wizard was finished. Changes no setting — it only marks the profile. */
   completeCalibration: () => void
+  /**
+   * Run discovery again, which in the desktop shell also means starting the engine if it is not
+   * running. Deliberately manual: an automatic loop would relaunch a process that opens a camera,
+   * every few seconds, for as long as it keeps failing.
+   */
+  reconnect: () => void
 }
 
 export function useEngineCommands(): EngineCommands {
@@ -93,6 +99,12 @@ export function useEngineCommands(): EngineCommands {
     engineClient.send({ type: 'calibrate', action: 'complete' })
   }, [])
 
+  // Not a `send` like the rest: there is no socket to send it on. This is the one command that
+  // exists precisely because the connection is not there.
+  const reconnect = useCallback(() => {
+    engineClient.connect()
+  }, [])
+
   return {
     start,
     stop,
@@ -104,6 +116,7 @@ export function useEngineCommands(): EngineCommands {
     startMeasurement,
     cancelMeasurement,
     completeCalibration,
+    reconnect,
   }
 }
 

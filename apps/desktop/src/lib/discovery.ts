@@ -3,9 +3,10 @@
  *
  * Two strategies behind one interface:
  *
- *  - **handshake** — read `%LOCALAPPDATA%\AirHand\runtime.json` through the Tauri Rust layer,
- *    which validates that the publishing process is still alive. This is the production path; a
- *    browser cannot read the filesystem, which is why it lives in Rust.
+ *  - **handshake** — ask the Tauri Rust layer for a running engine. It reads
+ *    `%LOCALAPPDATA%\AirHand\runtime.json`, validates that the publishing process is still alive,
+ *    and starts the bundled engine if there is none. This is the production path; a browser can
+ *    neither read the filesystem nor start a process, which is why it lives in Rust.
  *  - **dev-override** — `VITE_AIRHAND_WS_URL` + `VITE_AIRHAND_WS_TOKEN`. Used in browser
  *    development, where the engine is started manually with pinned `--port` / `--token`.
  *
@@ -29,6 +30,7 @@ export type DiscoveryFailureReason =
   | 'handshake-unreadable'
   | 'handshake-stale'
   | 'handshake-version-mismatch'
+  | 'engine-unavailable'
 
 export interface DiscoveryFailure {
   ok: false
@@ -47,11 +49,12 @@ interface Handshake {
   startedAt?: string | null
 }
 
-/** The reasons the Rust reader can name. Anything else is a broken invoke, not a bad handshake. */
+/** The reasons the Rust side can name. Anything else is a broken invoke, not a bad handshake. */
 const READER_REASONS = new Set<DiscoveryFailureReason>([
   'handshake-missing',
   'handshake-unreadable',
   'handshake-stale',
+  'engine-unavailable',
 ])
 
 /** True when running inside the Tauri shell rather than a plain browser. */
