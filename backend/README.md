@@ -151,8 +151,8 @@ pip install -r requirements-dev.txt
 Commands below call `.\.venv\Scripts\python.exe` directly so they work whether or not the venv is
 activated.
 
-CV dependencies are listed separately in `requirements-cv.txt` and are **not installed yet** —
-see that file before adding them.
+MediaPipe, OpenCV and numpy are ordinary entries in `requirements.txt`. `requirements-dev.txt`
+adds pytest and PyInstaller, which is build-time only.
 
 ## Run
 
@@ -182,7 +182,7 @@ removes the handshake file, a hard kill does not.
 .\.venv\Scripts\python.exe -m pytest
 ```
 
-170 tests, no webcam required. They cover ephemeral port binding, atomic handshake writes, token
+219 tests, no webcam required. They cover ephemeral port binding, atomic handshake writes, token
 auth, protocol-version agreement, telemetry shape, `stop` halting the stream, duplicate-frame
 suppression, model presence, blank/noise frame handling, out-of-order timestamps, the
 missing-camera error path, gesture classification, hysteresis and dropout grace, cursor mapping and
@@ -252,6 +252,29 @@ airhand/
 └── communication/
     └── server.py         # WebSocket server; no CV logic
 ```
+
+## Freeze
+
+The desktop app ships the engine as a bundled executable, so the machine running it needs no
+Python at all.
+
+```powershell
+.\.venv\Scripts\pyinstaller.exe airhand.spec      # -> dist\airhand-engine\
+cd ..\apps\desktop; npm run engine:sync           # copy it where Tauri expects it
+```
+
+**One directory, not one file**, and the reasoning is in `airhand.spec`: one-file re-extracts the
+whole bundle on every launch (3.3 s versus 1.1 s to publish a handshake) and, worse, runs the real
+process as a *child* of a bootloader — so killing what you launched leaves the engine alive. An
+engine that survives being stopped is not acceptable in a program that drives the cursor.
+
+Two traps this build has already hit:
+
+- **`matplotlib` cannot be excluded.** `import mediapipe` reaches `matplotlib.pyplot` through
+  `tasks.python.vision.drawing_utils`. Excluding it produces a bundle that starts, publishes a
+  handshake, and dies the moment the camera source is built.
+- **`--source synthetic` never imports MediaPipe.** Any check of a frozen build that uses it is
+  testing asyncio, not the freeze. Verify with a real camera.
 
 ## Tools
 
