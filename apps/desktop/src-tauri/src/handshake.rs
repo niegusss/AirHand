@@ -47,6 +47,10 @@ pub enum FailureReason {
     HandshakeMissing,
     HandshakeUnreadable,
     HandshakeStale,
+    /// We tried to start an engine and could not — a missing bundle, a refused spawn, or a
+    /// process that never published a handshake. Distinct from the three above, which describe a
+    /// file we found.
+    EngineUnavailable,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -57,7 +61,7 @@ pub struct HandshakeFailure {
 }
 
 impl HandshakeFailure {
-    fn new(reason: FailureReason, message: impl Into<String>) -> Self {
+    pub(crate) fn new(reason: FailureReason, message: impl Into<String>) -> Self {
         Self {
             reason,
             message: message.into(),

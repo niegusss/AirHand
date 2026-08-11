@@ -6,21 +6,31 @@ consumer of the WebSocket contract in `shared/protocol/`.
 
 ## Running it
 
-Two processes, always. The engine is a separate program by design and must stay runnable on its
-own — Tauri does not spawn it yet.
+One command, once the engine has been frozen:
 
 ```powershell
-# terminal 1 — the engine
-cd ..\..\backend
-.\.venv\Scripts\python.exe -m airhand.main
-
-# terminal 2 — the desktop shell
+cd ..\..\backend; .\.venv\Scripts\pyinstaller.exe airhand.spec   # once, and after engine changes
+cd ..\apps\desktop; npm run engine:sync                          # copies it into src-tauri/engine
 npm run tauri dev
 ```
 
-The engine publishes `%LOCALAPPDATA%\AirHand\runtime.json` as it binds an ephemeral port, and the
-Rust layer (`src-tauri/src/handshake.rs`) reads it, checks the publishing process is still alive,
-and hands the port and token to the webview. Nothing has to be pinned or copied by hand.
+The shell starts the engine, waits for it to publish
+`%LOCALAPPDATA%\AirHand\runtime.json`, and hands the port and token to the webview
+(`src-tauri/src/engine.rs`, `src-tauri/src/handshake.rs`).
+
+**Unless one is already running.** A live handshake is adopted rather than replaced: two engines
+fight over the camera, and the second one's handshake overwrites the first's. So the old shape
+still works and is still the faster loop while changing Python —
+
+```powershell
+# terminal 1
+cd ..\..\backend; .\.venv\Scripts\python.exe -m airhand.main
+
+# terminal 2
+npm run tauri dev
+```
+
+— and closing the window leaves that engine running, because the app only stops what it started.
 
 ### Browser development
 
@@ -52,3 +62,6 @@ npm run test          # vitest
 npm run build
 cd src-tauri; cargo test
 ```
+
+`cargo` needs `src-tauri/engine/` to exist — `bundle.resources` fails the build on a glob that
+matches nothing. Run `npm run engine:sync` first.

@@ -23,6 +23,9 @@ serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
 tauri = { version = "2.11.3", features = [] }
 tauri-plugin-log = "2"
+# Spawning and terminating the engine process. Used from Rust only — the webview is never given
+# the ability to run programs.
+tauri-plugin-shell = "2"
 
 # Process liveness for the handshake reader. A stale handshake file is expected after a hard kill
 # — there is no cleanup opportunity — so the reader has to ask the OS whether the pid is still
