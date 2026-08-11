@@ -78,17 +78,17 @@ running as administrator. A click that "does nothing" over an elevated app is UI
 flowchart LR
     subgraph engine["Python engine — standalone process"]
         direction TB
-        CAM["Camera service<br/>OpenCV, MSMF"] --> MP["MediaPipe<br/>21 landmarks"]
+        CAM["Camera service · OpenCV/MSMF"] --> MP["MediaPipe · 21 landmarks"]
         MP --> FIL["One Euro filter"]
-        MP --> PTR["Pointer stage<br/>palm centroid + own filter"]
-        FIL --> GES["Gesture engine<br/>FSM + hysteresis"]
-        GES --> CUR["Cursor engine<br/>+ kill-switch"]
+        MP --> PTR["Pointer stage · palm centroid, own filter"]
+        FIL --> GES["Gesture engine · FSM with hysteresis"]
+        GES --> CUR["Cursor engine · kill-switch"]
         PTR --> CUR
     end
 
     subgraph app["Desktop app"]
         direction TB
-        SHELL["Tauri v2 shell<br/>Rust"] --> UI["React + TypeScript"]
+        SHELL["Tauri v2 shell · Rust"] --> UI["React + TypeScript"]
     end
 
     WEBCAM(["Webcam"]) --> CAM
