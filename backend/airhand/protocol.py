@@ -12,7 +12,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
 
-ENGINE_VERSION = "0.2.0"
+ENGINE_VERSION = "0.2.1"
 
 CameraState = Literal["off", "starting", "on", "error"]
 TrackingState = Literal["idle", "running", "paused"]

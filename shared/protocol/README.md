@@ -44,7 +44,7 @@ this server drives real OS input.
 
 ### `hello`
 ```jsonc
-{ "type": "hello", "protocolVersion": "1.10.0", "engineVersion": "0.2.0",
+{ "type": "hello", "protocolVersion": "1.10.0", "engineVersion": "0.2.1",
   "capabilities": ["telemetry", "preview", "settings", "calibration", "cameras"] }
 ```
 
