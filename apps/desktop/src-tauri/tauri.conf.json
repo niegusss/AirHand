@@ -1,6 +1,6 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "AirHand",
+  "productName": "AirHand Mouse",
   "version": "0.1.0",
   "identifier": "dev.airhand.desktop",
   "build": {
@@ -30,7 +30,12 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["nsis"],
+    "publisher": "AirHand",
+    "copyright": "AirHand",
+    "category": "Utility",
+    "shortDescription": "Control the cursor with hand gestures and a webcam.",
+    "longDescription": "AirHand Mouse tracks one hand through an ordinary webcam and drives the operating system cursor from it: move, click, right click, drag and scroll. All computer vision runs locally — there are no cloud services, no API keys and no network calls. Cursor actuation is off at every launch and must be enabled explicitly, and a global hotkey disables it instantly.",
     "resources": ["engine/**/*"],
     "icon": [
       "icons/32x32.png",
@@ -39,6 +44,13 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": ["English"],
+        "displayLanguageSelector": false
+      }
+    },
     "android": {
       "debugApplicationIdSuffix": ".debug"
     }
